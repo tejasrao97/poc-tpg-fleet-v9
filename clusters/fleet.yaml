@@ -24,8 +24,4 @@
 # state. clusters/fleet.example.yaml shows a filled-in file. tpg-day0 compares
 # its inputs with what runs on the cluster, not with this file (a version that
 # nothing runs yet is replaced; a running one is changed by tpg-upgrade).
-clusters:
-  aks-tpg-poc-03:
-    operator:
-      version: v4.4.0
-    instances: {}
+clusters: {}
