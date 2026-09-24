@@ -33,8 +33,8 @@ clusters:
         instance:
           postgresVersion: postgres-16.8
           highAvailability:
-            enabled: false
-            readReplicas: 0
+            enabled: true
+            readReplicas: 1
         backup:
           enableSSL: false
           scheduled: false
@@ -62,8 +62,8 @@ clusters:
         instance:
           postgresVersion: postgres-16.8
           highAvailability:
-            enabled: false
-            readReplicas: 0
+            enabled: true
+            readReplicas: 1
         backup:
           enableSSL: false
           scheduled: false
