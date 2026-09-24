@@ -1,0 +1,12 @@
+instance:
+  postgresVersion: postgres-16.8
+  highAvailability:
+    enabled: true
+    readReplicas: 1
+backup:
+  enableSSL: false
+  scheduled: false
+deleted:
+  workflow: tpg-delete-apps-jmvr5
+  time: "2026-09-24T14:43:41Z"
+  stanzaName: pg-billing-db-billing-db-8dd35211-484c-41d8-8420-3dc8a2aef0ab

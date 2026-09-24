@@ -29,15 +29,6 @@ clusters:
     operator:
       version: v4.4.0
     instances:
-      billing-db:
-        instance:
-          postgresVersion: postgres-16.8
-          highAvailability:
-            enabled: true
-            readReplicas: 1
-        backup:
-          enableSSL: false
-          scheduled: false
       orders-db:
         instance:
           postgresVersion: postgres-16.8
