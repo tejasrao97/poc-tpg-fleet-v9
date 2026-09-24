@@ -1,0 +1,11 @@
+instance:
+  postgresVersion: postgres-16.9
+  highAvailability:
+    enabled: true
+    readReplicas: 3
+backup:
+  enableSSL: false
+deleted:
+  workflow: tpg-delete-instance-nh6xl
+  time: "2026-09-24T08:29:00Z"
+  stanzaName: ""

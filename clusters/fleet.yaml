@@ -61,11 +61,3 @@ clusters:
             readReplicas: 1
         backup:
           enableSSL: false
-      billing-db:
-        instance:
-          postgresVersion: postgres-16.9
-          highAvailability:
-            enabled: true
-            readReplicas: 3
-        backup:
-          enableSSL: false
