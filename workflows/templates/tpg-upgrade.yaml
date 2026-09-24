@@ -1,0 +1,259 @@
+# Day 1: upgrade the Tanzu Postgres operator (component=operator) or Postgres instances
+# (component=postgres) on the selected clusters, canary first and then in batches.
+# With clusterMap, each cluster's operatorVersion and each instance's
+# postgresVersion decide what is upgraded: the operator first, then the instances.
+# The new version is written to clusters/fleet.yaml (pushMode direct or pr).
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-upgrade
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Day 1: upgrade the Tanzu Postgres operator or Postgres instances, canary first and then in
+      batches. Writes the version to clusters/fleet.yaml. Major Postgres upgrades need
+      allowMajor=true and pause for approval before every batch after the canary.
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  parallelism: 20
+  arguments:
+    parameters:
+    # ---- mandatory without clusterMap (the validate step lists the valid choices)
+    - name: component
+      description: "operator: Tanzu Postgres operator; postgres: Postgres instances. With clusterMap: optional, limits the run to one part"
+      value: ""
+      enum: ["", "operator", "postgres"]
+    - name: targetVersion
+      description: "operator: chart version such as v4.5.0; postgres: PostgresVersion such as postgres-17.6. With clusterMap: the default of the component"
+      value: ""
+    - name: clusters
+      description: "List: comma-separated registered clusters, or all (without clusterMap)"
+      value: ""
+    - name: pushMode
+      description: "direct: push to the fleet branch; pr: open a pull request and continue after it is merged"
+      value: ""
+      enum: ["", "direct", "pr"]
+    - name: instances
+      description: "List: component=postgres only (mandatory there): comma-separated instances, or all (without clusterMap)"
+      value: ""
+    - name: clusterMap
+      description: "Map (YAML or JSON): cluster -> {operatorVersion, instances: {instance -> {postgresVersion, preUpgradeBackup, allowMajor}}}; the operator first, then the instances"
+      value: ""
+    # ---- optional
+    - name: preUpgradeBackup
+      description: "Full backup of each affected instance before the upgrade"
+      value: "true"
+      enum: ["true", "false"]
+    - name: allowMajor
+      description: "component=postgres: allow major version upgrades (for example 16 to 17)"
+      value: "false"
+      enum: ["false", "true"]
+    - name: operatorPatches
+      description: "Operator manifest patches (tpg-patch) at an operator upgrade: keep (re-apply after the new chart, report the values they override) or drop"
+      value: keep
+      enum: ["keep", "drop"]
+    - name: maxParallel
+      value: "1"
+    - name: rolloutMode
+      description: "canary: one wave-0 cluster first, then batches of maxParallel; batches: no canary, batches of maxParallel; all: every selected cluster at once"
+      value: canary
+      enum: ["canary", "batches", "all"]
+    - name: dryRun
+      description: "true: validate and record the planned upgrade per target; change nothing"
+      value: "false"
+      enum: ["false", "true"]
+    - name: timeoutSeconds
+      description: "Per-cluster (operator) or per-instance (postgres) timeout"
+      value: "1800"
+    - name: prTimeoutSeconds
+      value: "3600"
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: discover
+        templateRef:
+          name: tpg-lib
+          template: discover
+        arguments:
+          parameters:
+            - name: clusters
+              value: "{{steps.validate.outputs.parameters.selection}}"
+            - name: filter
+              value: check
+            - name: clusterMap
+              value: "{{workflow.parameters.clusterMap}}"
+    - - name: plan
+        templateRef:
+          name: tpg-lib
+          template: plan-batches
+        arguments:
+          parameters:
+            - name: requirePrecheck
+              value: "false"
+            - name: maxParallel
+              value: "{{workflow.parameters.maxParallel}}"
+            - name: rolloutMode
+              value: "{{workflow.parameters.rolloutMode}}"
+    - - name: upgrade
+        template: run-batches
+        when: "{{steps.plan.outputs.parameters.hasBatches}} == true"
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{steps.plan.outputs.parameters.batches}}"
+            - name: approval
+              value: "{{steps.validate.outputs.parameters.approval}}"
+  - name: run-batches
+    inputs:
+      parameters:
+        - name: batches
+        # true: pause for approval before every batch after the first (a major
+        # Postgres upgrade is allowed: allowMajor input or clusterMap key)
+        - name: approval
+    steps:
+    - - name: split
+        templateRef:
+          name: tpg-lib
+          template: split-first
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{inputs.parameters.batches}}"
+    - - name: batch
+        template: upgrade-cluster
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item}}"
+        withParam: "{{steps.split.outputs.parameters.first}}"
+    - - name: approve-next-batch
+        templateRef:
+          name: tpg-lib
+          template: approve
+        when: "'{{inputs.parameters.approval}}' == 'true' && {{steps.split.outputs.parameters.hasRest}} == true"
+    - - name: next
+        template: run-batches
+        when: "{{steps.split.outputs.parameters.hasRest}} == true"
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{steps.split.outputs.parameters.rest}}"
+            - name: approval
+              value: "{{inputs.parameters.approval}}"
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    outputs:
+      parameters:
+        - name: selection
+          valueFrom:
+            path: /tmp/selection
+            default: ""
+        - name: approval
+          valueFrom:
+            path: /tmp/approval
+            default: "false"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, upgrade]
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_OPERATOR_PATCHES, value: "{{workflow.parameters.operatorPatches}}"}
+        - {name: P_COMPONENT, value: "{{workflow.parameters.component}}"}
+        - {name: P_TARGET_VERSION, value: "{{workflow.parameters.targetVersion}}"}
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_INSTANCES, value: "{{workflow.parameters.instances}}"}
+        - {name: P_PRE_BACKUP, value: "{{workflow.parameters.preUpgradeBackup}}"}
+        - {name: P_ALLOW_MAJOR, value: "{{workflow.parameters.allowMajor}}"}
+        - {name: P_MAX_PARALLEL, value: "{{workflow.parameters.maxParallel}}"}
+        - {name: P_ROLLOUT_MODE, value: "{{workflow.parameters.rolloutMode}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.timeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: upgrade-cluster
+    inputs:
+      parameters:
+        - name: cluster
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_upgrade_result
+          help: "Upgrade result per cluster (last recorded result on that cluster)"
+          labels:
+            - key: cluster
+              value: "{{inputs.parameters.cluster}}"
+            - key: component
+              value: "{{workflow.parameters.component}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/upgrade-cluster.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_OPERATOR_PATCHES, value: "{{workflow.parameters.operatorPatches}}"}
+        - {name: P_COMPONENT, value: "{{workflow.parameters.component}}"}
+        - {name: P_TARGET_VERSION, value: "{{workflow.parameters.targetVersion}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_INSTANCES, value: "{{workflow.parameters.instances}}"}
+        - {name: P_PRE_BACKUP, value: "{{workflow.parameters.preUpgradeBackup}}"}
+        - {name: P_ALLOW_MAJOR, value: "{{workflow.parameters.allowMajor}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.timeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              # upgrade:operator one result per cluster, upgrade:postgres per
+              # instance, upgrade: (clusterMap without component) the recorded results
+              value: "upgrade:{{workflow.parameters.component}}"

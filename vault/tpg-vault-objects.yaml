@@ -1,0 +1,42 @@
+# Connection and auth method that every tpg VaultStaticSecret uses
+# (vaultAuthRef: tpg-vault/tpg-vault). Applied by helm-addons.sh after the VSO
+# release, which replaces the @...@ tokens:
+#   @VAULT_ADDR@        hub: https://vault.vault.svc:8200; targets: tpg-settings vaultFleetAddr
+#   @AUTH_MOUNT@        hub: kubernetes; targets: k8s-<cluster>
+#   @AUTH_ROLE@         hub: tpg-argocd; targets: tpg-vso
+#   @ALLOWED_NS@        hub: argocd,argo (Argo CD repositories, workflow log archive); targets: * (every namespace)
+# Secret tpg-vault/vault-ca (the Vault CA certificate) is created by helm-addons.sh.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tpg-vault
+  labels:
+    tpg.fleet/managed: "true"
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultConnection
+metadata:
+  name: tpg-vault
+  namespace: tpg-vault
+spec:
+  address: "@VAULT_ADDR@"
+  caCertSecretRef: vault-ca
+  skipTLSVerify: false
+---
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: tpg-vault
+  namespace: tpg-vault
+spec:
+  vaultConnectionRef: tpg-vault
+  method: kubernetes
+  mount: "@AUTH_MOUNT@"
+  kubernetes:
+    role: "@AUTH_ROLE@"
+    # Must exist in the namespace of each VaultStaticSecret
+    serviceAccount: tpg-vso
+    audiences:
+      - vault
+  allowedNamespaces:
+    - "@ALLOWED_NS@"

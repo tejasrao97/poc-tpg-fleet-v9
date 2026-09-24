@@ -1,0 +1,164 @@
+# Flags that a pinned CLI no longer accepts, or accepts with a changed meaning.
+#
+# check_cli_flags.py reads this file, finds every invocation of these tools in
+# the repositories (shell scripts, WorkflowTemplates, Markdown code blocks) and
+# fails on a match. It is a static check: it needs none of the binaries and no
+# cluster, so it runs in CI and before every delivery.
+#
+# Add a rule whenever a pinned image moves to a new major CLI version. The
+# version that matters is the one in the image the workflows run, not the one on
+# the workstation: `toolsImage` is alpine/k8s:1.35.8, which ships Helm 4.
+#
+# Rule fields
+#   id            stable identifier, printed with the finding
+#   tool          key of the tool entry
+#   subcommands   subcommands the rule applies to, or [*] for all
+#   flags         flags that must not appear
+#   arg_forbid    regular expression a positional argument must not match
+#   severity      error (fails the run) or warning
+#   message       what is wrong
+#   fix           what to write instead
+
+tools:
+  helm:
+    # helm 4.x, from alpine/k8s:1.35.8 (workflow steps) and the workstation
+    pinned: "4"
+    # Wrapper functions that run the tool: h() in helm-addons.sh, hr_h() in the
+    # shared library (common.sh in both repositories)
+    aliases: [h, hr_h]
+    # Global flags that take a value, so the subcommand is found correctly
+    value_flags: ["--kube-context", "--kubeconfig", "-n", "--namespace", "--registry-config",
+                  "--repository-config", "--repository-cache", "--burst-limit", "--qps",
+                  "--kube-apiserver", "--kube-as-user", "--kube-token", "--kube-ca-file"]
+  kubectl:
+    pinned: "1.35"
+    # k() in helm-addons.sh, tk() in lib.sh, hr_k() in the shared library,
+    # hk()/ck()/hkq() in the tpg-aks-infra addons and verify steps
+    aliases: [k, tk, hr_k, hk, ck, hkq]
+    value_flags: ["--context", "--kubeconfig", "-n", "--namespace", "--as", "--server",
+                  "--token", "--request-timeout", "--certificate-authority"]
+  argocd:
+    pinned: "3.5"
+    aliases: []
+    value_flags: ["--server", "--auth-token", "--grpc-web-root-path", "--config"]
+  argo:
+    pinned: "4.1"
+    aliases: []
+    value_flags: ["-n", "--namespace", "--kubeconfig", "--context", "--instanceid"]
+
+rules:
+  # ---------------------------------------------------------------- Helm 4
+  - id: helm4-list-all
+    tool: helm
+    subcommands: [list, ls]
+    flags: ["-a", "--all"]
+    severity: error
+    message: >-
+      helm list -a / --all was removed in Helm 4. Helm 4 lists every release
+      state by default, so the flag is both gone and unnecessary; the workflow
+      tools image alpine/k8s:1.35.8 ships Helm 4 and fails the step with
+      "unknown shorthand flag: 'a'".
+    fix: >-
+      Drop the flag, or select the states explicitly with
+      --deployed --failed --pending --superseded --uninstalled --uninstalling,
+      which both Helm 3 and Helm 4 accept (HR_LIST_ALL in the shared library,
+      workflows/scripts/common.sh and tpg-aks-infra scripts/lib/common.sh).
+
+  - id: helm4-atomic
+    tool: helm
+    subcommands: [install, upgrade]
+    flags: ["--atomic"]
+    severity: error
+    message: >-
+      --atomic is renamed --rollback-on-failure in Helm 4. The old name is
+      deprecated and only warns for now.
+    fix: "Use --rollback-on-failure."
+
+  - id: helm4-force
+    tool: helm
+    subcommands: [install, upgrade]
+    flags: ["--force"]
+    severity: error
+    message: >-
+      --force is renamed --force-replace in Helm 4. The old name is deprecated
+      and only warns for now.
+    fix: "Use --force-replace."
+
+  - id: helm4-create-pods
+    tool: helm
+    subcommands: [install, upgrade, rollback, uninstall]
+    flags: ["--create-pods"]
+    severity: error
+    message: "--create-pods was removed in Helm 4."
+    fix: "Remove the flag; there is no replacement."
+
+  - id: helm4-post-renderer-path
+    tool: helm
+    subcommands: [install, upgrade, template]
+    flags: []
+    arg_forbid: '^--post-renderer=[./~]'
+    severity: error
+    message: >-
+      Helm 4 no longer runs an executable path passed to --post-renderer; it
+      takes a plugin name.
+    fix: "Package the post-renderer as a Helm plugin and pass its name."
+
+  - id: helm4-registry-login-path
+    tool: helm
+    subcommands: [registry]
+    flags: []
+    arg_forbid: '^[a-z0-9.-]+\.[a-z]{2,}/\S'
+    severity: error
+    message: >-
+      helm registry login in Helm 4 takes the registry domain only; a host with
+      a path is rejected.
+    fix: >-
+      Log in to the domain (tanzu-sql-postgres.packages.broadcom.com) and keep
+      the repository path in the chart reference.
+
+  # ---------------------------------------------------------------- kubectl
+  - id: kubectl-export
+    tool: kubectl
+    subcommands: [get]
+    flags: ["--export"]
+    severity: error
+    message: "kubectl get --export was removed in Kubernetes 1.18."
+    fix: "Remove the flag, or clean the object with jq / yq after reading it."
+
+  - id: kubectl-run-generator
+    tool: kubectl
+    subcommands: [run, expose, create]
+    flags: ["--generator"]
+    severity: error
+    message: "--generator was removed in Kubernetes 1.18."
+    fix: "Write the manifest and apply it."
+
+  - id: kubectl-delete-cascade-bool
+    tool: kubectl
+    subcommands: [delete]
+    flags: ["--cascade=true", "--cascade=false"]
+    severity: error
+    message: >-
+      --cascade takes background, foreground or orphan since Kubernetes 1.20;
+      the boolean form is deprecated and reads as the opposite of what people
+      expect (--cascade=false means orphan).
+    fix: "Use --cascade=orphan, --cascade=foreground or --cascade=background."
+
+  - id: kubectl-rollout-status-watch-false
+    tool: kubectl
+    subcommands: [rollout]
+    flags: ["-w=false"]
+    severity: warning
+    message: "-w=false on kubectl rollout status is ambiguous across versions."
+    fix: "Use --watch=false."
+
+  # ---------------------------------------------------------------- argo
+  - id: argo-submit-instanceid-flag
+    tool: argo
+    subcommands: [submit]
+    flags: ["--instanceid"]
+    severity: warning
+    message: >-
+      --instanceid on argo submit is a global flag, not a submit flag, in Argo
+      Workflows v3.4 and later.
+    fix: "Pass it before the subcommand, or set ARGO_INSTANCEID."

@@ -1,0 +1,60 @@
+{{- include "tpg.required" . }}
+{{- with (include "tpg.ctx" . | fromYaml) }}
+# Azure Blob backup location (pgBackRest). Field names follow the operator
+# sample manifest; confirm with: kubectl explain postgresbackuplocation.spec.storage.azure
+apiVersion: sql.tanzu.vmware.com/v1
+kind: PostgresBackupLocation
+metadata:
+  name: {{ .Values.instance.name }}-backup-location
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  # pgBackRest expiry: keep the newest fullRetention full backups with every
+  # incremental that depends on them (incrementals have no count of their own)
+  # and the newest diffRetention differentials. WAL older than the oldest kept
+  # backup is removed with it. tpg-backup-retention adds an age limit.
+  retentionPolicy:
+    fullRetention:
+      type: count
+      number: {{ .Values.backup.fullRetention }}
+    diffRetention:
+      number: {{ .Values.backup.diffRetention }}
+  storage:
+    azure:
+      container: {{ .Values.backup.container | quote }}
+      repoPath: {{ printf "/%s" .Release.Namespace | quote }}
+      endpoint: {{ .Values.backup.endpoint | quote }}
+      keyType: "shared"
+      {{- /* Always written, true or false (backup.enableSSL, default false). */}}
+      enableSSL: {{ .Values.backup.enableSSL | default false }}
+      {{- /*
+        forcePathStyle and additionalParameters are written only when they carry
+        a value. Both are optional in the CRD and are serialized with omitempty,
+        so the API server stores nothing for "forcePathStyle: false" (the
+        default) and nothing for an empty "additionalParameters: {}". Argo CD
+        then compares a desired object that has the keys with a live object that
+        does not, and reports the Application OutOfSync forever, with a diff
+        that no sync can settle. Rendering the defaults away removes the
+        difference at the source; the ignoreDifferences entry in
+        bootstrap/appsets/tpg-instances.yaml covers a cluster whose operator
+        drops or adds them anyway.
+      */}}
+      {{- if .Values.backup.forcePathStyle }}
+      forcePathStyle: true
+      {{- end }}
+      {{- with .Values.backup.caBundle }}
+      caBundle: |
+        {{- . | nindent 8 }}
+      {{- end }}
+      secret:
+        name: backup-storage
+  {{- with .Values.backup.additionalParameters }}
+  additionalParameters:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  backupSync:
+    enabled: true
+  backupIntegrityValidation:
+    enabled: true
+{{- end }}

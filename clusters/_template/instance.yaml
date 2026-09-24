@@ -1,0 +1,24 @@
+# Instance defaults shared by every Postgres instance on every cluster.
+#
+# The tpg-instances ApplicationSet passes this file to charts/tpg-instance as
+# the second value file. Override any key for one instance under
+# clusters.<cluster>.instances.<instance> in clusters/fleet.yaml; tpg-day0,
+# tpg-upgrade and tpg-scale-instance write those overrides for you.
+instance:
+  # Required per instance: a name from `kubectl get postgresversion`
+  postgresVersion: ""
+  storageClassName: tpg-data-retain
+  storageSize: 20Gi
+  walStorageSize: 10Gi
+  serviceType: ClusterIP
+  highAvailability:
+    enabled: true
+    readReplicas: 1
+  resources:
+    data:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi

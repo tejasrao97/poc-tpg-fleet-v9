@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tpg
+  namespace: argocd
+spec:
+  description: Tanzu for Postgres on AKS GitOps POC
+  sourceRepos:
+    - https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+    - tanzu-sql-postgres.packages.broadcom.com
+    - https://prometheus-community.github.io/helm-charts
+  destinations:
+    # Hub (in-cluster) and every registered target cluster
+    - server: "*"
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

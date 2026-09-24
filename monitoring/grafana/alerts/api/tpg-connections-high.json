@@ -1,0 +1,67 @@
+{
+  "uid": "tpg-connections-high",
+  "title": "Postgres connections above 80%",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "relativeTimeRange": {
+        "from": 900,
+        "to": 0
+      },
+      "datasourceUid": "${DATASOURCE_UID}",
+      "model": {
+        "refId": "A",
+        "expr": "sum by (cluster, postgres_instance) (pg_stat_activity_count) / max by (cluster, postgres_instance) (pg_settings_max_connections)",
+        "instant": true,
+        "range": false,
+        "intervalMs": 60000,
+        "maxDataPoints": 43200
+      }
+    },
+    {
+      "refId": "B",
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "B",
+        "type": "reduce",
+        "expression": "A",
+        "reducer": "last",
+        "settings": {
+          "mode": "dropNN"
+        }
+      }
+    },
+    {
+      "refId": "C",
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "C",
+        "type": "threshold",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "gt",
+              "params": [
+                0.8
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "noDataState": "OK",
+  "execErrState": "Error",
+  "for": "10m",
+  "labels": {
+    "severity": "warning"
+  },
+  "annotations": {
+    "summary": "{{ $labels.cluster }}/{{ $labels.postgres_instance }} uses more than 80% of max_connections"
+  },
+  "folderUID": "tpg-postgres",
+  "ruleGroup": "tpg-postgres",
+  "orgID": 1
+}

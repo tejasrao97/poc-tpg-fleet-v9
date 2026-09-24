@@ -1,0 +1,142 @@
+# Install or upgrade the Helm add-on releases on target clusters: cert-manager, the Vault
+# Secrets Operator (vso), and for the standalone monitoring option the kube-prometheus-stack
+# agent (kps) and kube-state-metrics (tpg-ksm). A pre-check runs first (helm-addons.sh):
+# releases that already exist with changes are skipped (existingAddons=skip) or upgraded
+# (existingAddons=upgrade); a newer installed chart is never downgraded, and a compatible
+# cert-manager or VSO installed by someone else is reused.
+# The hub releases are installed by tpg-aks-infra scripts/run.sh (steps vault and addons).
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-helm-addons
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Install or upgrade cert-manager, the Vault Secrets Operator and the standalone monitoring
+      agent as Helm releases on the selected target clusters, after a pre-check of what is
+      already installed.
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  arguments:
+    parameters:
+    # ---- mandatory
+    - name: clusters
+      description: "Comma-separated registered clusters, or all"
+      value: ""
+    # ---- optional
+    - name: components
+      description: "auto (cert-manager and vso, plus monitoring when tpg-settings monitoringOption=standalone), or a comma-separated list of cert-manager, vso, monitoring"
+      value: "auto"
+    - name: existingAddons
+      description: "Releases that already exist with a different chart version or values: skip (report SKIPPED_EXISTS) or upgrade"
+      value: "skip"
+      enum: ["skip", "upgrade"]
+    - name: dryRun
+      description: "true: helm upgrade --install --dry-run=server; change nothing"
+      value: "false"
+      enum: ["false", "true"]
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    # at most 3 clusters at a time
+    parallelism: 3
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: install
+        template: install-cluster
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item}}"
+        withParam: "{{steps.validate.outputs.parameters.clusters}}"
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    outputs:
+      parameters:
+        - name: clusters
+          valueFrom:
+            path: /tmp/clusters.json
+            # A default keeps a failing validate step reporting its own error
+            # instead of Argo replacing it with "output parameter not found".
+            default: "[]"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, helm-addons]
+      env:
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_COMPONENTS, value: "{{workflow.parameters.components}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_EXISTING, value: "{{workflow.parameters.existingAddons}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: install-cluster
+    inputs:
+      parameters:
+        - name: cluster
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_helm_addons_result
+          help: "Helm add-on install result per cluster"
+          labels:
+            - key: cluster
+              value: "{{inputs.parameters.cluster}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/addons-cluster.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+        - "{{workflow.parameters.components}}"
+        - "{{workflow.parameters.dryRun}}"
+        - "result.{{inputs.parameters.cluster}}"
+        - "{{workflow.parameters.existingAddons}}"
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              value: steps

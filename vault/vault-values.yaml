@@ -1,0 +1,75 @@
+# HashiCorp Vault (community edition) on the hub: Helm release vault, namespace vault.
+# Installed by tpg-aks-infra scripts/steps/35-vault.sh through
+# workflows/scripts/helm-addons.sh (component vault), chart hashicorp/vault 0.34.1.
+#
+# Standalone server with integrated Raft storage on one 10Gi PVC. The server
+# configuration (server.standalone.config) is not set here: helm-addons.sh
+# renders config-shamir.hcl or config-azure-keyvault.hcl and passes it as a
+# values overlay, together with the Azure workload identity settings for the
+# azure-keyvault unseal mode.
+global:
+  enabled: true
+  # TLS on the listener; certificate from Secret vault/vault-tls (created by 35-vault.sh)
+  tlsDisable: false
+
+injector:
+  enabled: true
+  replicas: 1
+  # Pods without the annotations are not changed; a failed injection must not
+  # block unrelated pods.
+  failurePolicy: Ignore
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+server:
+  image:
+    repository: hashicorp/vault
+    tag: "2.0.4"
+  extraEnvironmentVars:
+    VAULT_CACERT: /vault/userconfig/vault-tls/ca.crt
+  volumes:
+    - name: vault-tls
+      secret:
+        secretName: vault-tls
+        defaultMode: 420
+  volumeMounts:
+    - name: vault-tls
+      mountPath: /vault/userconfig/vault-tls
+      readOnly: true
+  dataStorage:
+    enabled: true
+    size: 10Gi
+    # Premium ZRS with Retain, created on the hub by 35-vault.sh (platform/base/storageclass.yaml)
+    storageClass: tpg-data-retain
+  auditStorage:
+    enabled: false
+  standalone:
+    enabled: true
+  ha:
+    enabled: false
+  # TokenReview permission for the hub Kubernetes auth method (auth/kubernetes)
+  authDelegator:
+    enabled: true
+  serviceAccount:
+    create: true
+    name: vault
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  service:
+    enabled: true
+    type: ClusterIP
+
+# The UI is exposed by the Services that 35-vault.sh manages (vault-fleet, vault-ui).
+ui:
+  enabled: false
+
+csi:
+  enabled: false

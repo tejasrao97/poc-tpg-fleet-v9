@@ -1,0 +1,23 @@
+# WorkflowTemplates, CronWorkflows, scripts ConfigMap and RBAC on the hub.
+# Automated sync is enabled here only: these objects contain no data and must
+# always match Git. Target cluster Applications are synced by the workflows.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tpg-hub-workflows
+  namespace: argocd
+spec:
+  project: tpg-hub
+  source:
+    repoURL: https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+    targetRevision: main
+    path: workflows
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

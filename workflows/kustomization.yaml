@@ -1,0 +1,68 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No global namespace: rbac.yaml also contains a Role in the argocd namespace, and
+# the admission policies are cluster-scoped.
+
+resources:
+  - rbac.yaml
+  # Hub admission policies (Kubernetes 1.30+): input types of the tpg workflows
+  # (generated from params/types.yaml) and "only the workflows sync target Applications"
+  - admission/workflow-parameters.yaml
+  - admission/application-sync.yaml
+  - templates/tpg-lib.yaml
+  - templates/tpg-day0.yaml
+  - templates/tpg-upgrade.yaml
+  - templates/tpg-patch.yaml
+  - templates/tpg-scale-instance.yaml
+  - templates/tpg-backup.yaml
+  - templates/tpg-backup-retention.yaml
+  - templates/tpg-restore.yaml
+  - templates/tpg-rotate-credential.yaml
+  - templates/tpg-delete-instance.yaml
+  - templates/tpg-delete-apps.yaml
+  - templates/tpg-helm-addons.yaml
+  - cron/tpg-backup-full.yaml
+  - cron/tpg-backup-incr.yaml
+  - cron/tpg-backup-retention.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  # Vault Agent configuration of the workflow pods (annotation vault.hashicorp.com/agent-configmap)
+  - name: tpg-vault-agent
+    namespace: argo
+    files:
+      - vault-agent/config-init.hcl
+      - vault-agent/config.hcl
+  - name: tpg-scripts
+    namespace: argo
+    files:
+      - scripts/common.sh
+      - scripts/lib.sh
+      - scripts/clustermap.py
+      - params/cluster-map-keys.yaml
+      - scripts/init-run.sh
+      - scripts/discover.sh
+      - scripts/plan-batches.sh
+      - scripts/split-first.sh
+      - scripts/report.sh
+      - scripts/day0-precheck.sh
+      - scripts/day0-deploy.sh
+      - scripts/operator-upgrade.sh
+      - scripts/postgres-upgrade.sh
+      - scripts/upgrade-cluster.sh
+      - scripts/patch-plan.sh
+      - scripts/patch-cluster.sh
+      - scripts/scale-instance.sh
+      - scripts/backup-instance.sh
+      - scripts/backup-retention.sh
+      - scripts/restore.sh
+      - scripts/rotate-cluster.sh
+      - scripts/rotate-hub.sh
+      - scripts/delete-instance.sh
+      - scripts/delete-apps.sh
+      - scripts/validate-params.sh
+      - scripts/fleet-day0.sh
+      - scripts/helm-addons.sh
+      - scripts/addons-cluster.sh

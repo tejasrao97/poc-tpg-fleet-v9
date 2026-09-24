@@ -1,0 +1,21 @@
+# Example operator manifest patch (tpg-patch operatorManifestPatchFilePath).
+# A partial manifest of an object the operator chart renders (apiVersion, kind,
+# metadata.name; the namespace defaults to tanzu-postgres-operator). The
+# workflows apply it to the target with server-side apply as field manager
+# tpg-patch; the tpg-operator Application ignores the fields that manager owns.
+# All files of a cluster are merged per object in list order (a later file wins;
+# containers, env and volumes merge by name, other lists are replaced).
+# Image fields are refused: the image follows the operator version (tpg-upgrade).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-operator
+spec:
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.azure.com/mode: system
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+          effect: NoSchedule

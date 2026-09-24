@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""A stub `kubectl` for the helm-addons.sh tests.
+
+Cluster state comes from the JSON file in STUB_KUBECTL_STATE:
+
+    {"crds": ["certificates.cert-manager.io"],
+     "deployments": [{"namespace": "cert-manager", "name": "cert-manager",
+                      "image": "quay.io/jetstack/cert-manager-controller:v1.21.0",
+                      "availableReplicas": 1}],
+     "statefulsets": [{"namespace": "vault", "name": "vault",
+                       "image": "hashicorp/vault:1.18.0"}],
+     "secrets": [{"namespace": "monitoring", "name": "grafana-admin"}]}
+
+Anything not in the state is reported NotFound, with kubectl's wording, so the
+scripts take the same branch they take against a real cluster.
+"""
+import json
+import os
+import sys
+
+VALUE_FLAGS = {"-n", "--namespace", "--context", "--kubeconfig", "-o", "--output",
+               "-l", "--selector", "-f", "--filename", "-k", "--kustomize",
+               "--timeout", "--for", "--from-file", "--from-literal", "--dry-run"}
+
+
+def state():
+    path = os.environ.get("STUB_KUBECTL_STATE", "")
+    if path and os.path.exists(path):
+        with open(path) as fh:
+            return json.load(fh)
+    return {}
+
+
+def log(argv):
+    path = os.environ.get("STUB_KUBECTL_LOG", "")
+    if path:
+        with open(path, "a") as fh:
+            fh.write(json.dumps(argv) + "\n")
+
+
+def notfound(kind, name):
+    sys.stderr.write('Error from server (NotFound): %s "%s" not found\n' % (kind, name))
+    sys.exit(1)
+
+
+def parse(argv):
+    sub, pos, flags, i = None, [], {}, 0
+    while i < len(argv):
+        t = argv[i]
+        if t.startswith("-"):
+            name, eq, inline = t.partition("=")
+            if eq:
+                flags[name] = inline
+            elif name in VALUE_FLAGS and i + 1 < len(argv):
+                i += 1
+                flags[name] = argv[i]
+            else:
+                flags[name] = True
+        elif sub is None:
+            sub = t
+        else:
+            pos.append(t)
+        i += 1
+    return sub, pos, flags
+
+
+def deployments(st, ns=None):
+    return [d for d in st.get("deployments", []) if ns in (None, d["namespace"])]
+
+
+def main():
+    argv = sys.argv[1:]
+    log(argv)
+    sub, pos, flags = parse(argv)
+    st = state()
+    ns = flags.get("-n") or flags.get("--namespace")
+    out = flags.get("-o") or flags.get("--output") or ""
+
+    if sub in ("apply", "wait", "label", "annotate", "delete", "rollout", "patch"):
+        return 0
+    if sub == "create":
+        kind = pos[0] if pos else ""
+        if flags.get("--dry-run") == "client" and out == "yaml":
+            name = pos[1] if len(pos) > 1 else "x"
+            print("apiVersion: v1\nkind: %s\nmetadata:\n  name: %s" % (kind.capitalize(), name))
+        return 0
+    if sub != "get":
+        return 0
+
+    kind = (pos[0] if pos else "").lower()
+    name = pos[1] if len(pos) > 1 else None
+    if name is None and "/" in kind:   # kubectl get deploy/argocd-server
+        kind, _, name = kind.partition("/")
+
+    if kind.startswith("crd"):
+        target = name or ""
+        if target in st.get("crds", []):
+            print("customresourcedefinition.apiextensions.k8s.io/%s" % target)
+            return 0
+        notfound("customresourcedefinitions.apiextensions.k8s.io", target)
+
+    if kind in ("deploy", "deployment", "deployments"):
+        items = deployments(st, None if (flags.get("-A") or flags.get("--all-namespaces")) else ns)
+        if name:
+            items = [d for d in items if d["name"] == name]
+            if not items:
+                notfound("deployments.apps", name)
+        if out == "json":
+            # A named object is returned on its own, a selector as a List, the
+            # way kubectl does: deploy_available() in helm-addons.sh reads
+            # .status.availableReplicas straight off the object.
+            wrapped = _wrap(items, "Deployment")
+            print(json.dumps(wrapped["items"][0] if name else wrapped))
+        elif out == "name":
+            for d in items:
+                print("deployment.apps/%s" % d["name"])
+            if not items and name:
+                notfound("deployments.apps", name)
+        else:
+            if not items:
+                if name:
+                    notfound("deployments.apps", name)
+                sys.stderr.write("No resources found\n")
+                return 1
+            for d in items:
+                print("%s\t1/1" % d["name"])
+        return 0
+
+    if kind in ("statefulset", "statefulsets", "sts"):
+        items = st.get("statefulsets", [])
+        print(json.dumps(_wrap(items, "StatefulSet")))
+        return 0
+
+    if kind in ("secret", "secrets"):
+        for s in st.get("secrets", []):
+            if s["name"] == name and s["namespace"] == ns:
+                print("secret/%s" % name)
+                return 0
+        notfound("secrets", name or "")
+
+    if kind in ("storageclass", "storageclasses", "sc"):
+        for s in st.get("storageclasses", []):
+            if s["name"] == name:
+                if out.startswith("jsonpath"):
+                    print(s.get("skuName", ""))
+                elif out == "json":
+                    print(json.dumps({"kind": "StorageClass", "metadata": {"name": s["name"]},
+                                      "parameters": {"skuName": s.get("skuName", "")}}))
+                else:
+                    print("storageclass.storage.k8s.io/%s" % name)
+                return 0
+        notfound("storageclasses.storage.k8s.io", name or "")
+
+    if kind in ("node", "nodes", "no"):
+        items = st.get("nodes", [])
+        print(json.dumps({"apiVersion": "v1", "kind": "List", "items": [
+            {"metadata": {"name": n["name"], "labels": n.get("labels", {})},
+             "status": {"conditions": [{"type": "Ready", "status": n.get("ready", "True")}]}}
+            for n in items]}))
+        return 0
+
+    if kind in ("application", "applications", "app", "apps"):
+        items = [a for a in st.get("applications", []) if ns in (None, a.get("namespace"))]
+        if out == "name":
+            for a in items:
+                print("application.argoproj.io/%s" % a["name"])
+        else:
+            print(json.dumps({"apiVersion": "v1", "kind": "List", "items": [
+                {"metadata": {"name": a["name"]}} for a in items]}))
+        return 0
+
+    if kind in ("svc", "service", "services"):
+        items = [s for s in st.get("services", []) if ns in (None, s["namespace"])]
+        if name:
+            items = [s for s in items if s["name"] == name]
+            if not items:
+                notfound("services", name)
+            if out.startswith("jsonpath"):
+                print(items[0].get("ip", ""))
+                return 0
+        print(json.dumps({"apiVersion": "v1", "kind": "List", "items": [
+            {"metadata": {"name": s["name"], "namespace": s["namespace"],
+                          "labels": s.get("labels", {})},
+             "spec": {"type": s.get("type", "ClusterIP"),
+                      "ports": [{"port": p} for p in s.get("ports", [])]},
+             "status": {"loadBalancer": {"ingress": [{"ip": s["ip"]}] if s.get("ip") else []}}}
+            for s in items]}))
+        return 0
+
+    notfound(kind or "resource", name or "")
+
+
+def _wrap(items, kind):
+    return {"apiVersion": "v1", "kind": "List", "items": [
+        {"kind": kind,
+         "metadata": {"name": i["name"], "namespace": i["namespace"]},
+         "spec": {"template": {"spec": {"containers": [{"name": i["name"], "image": i["image"]}]}}},
+         "status": {"availableReplicas": i.get("availableReplicas", 0),
+                    "readyReplicas": i.get("availableReplicas", 0)}}
+        for i in items]}
+
+
+if __name__ == "__main__":
+    sys.exit(main())

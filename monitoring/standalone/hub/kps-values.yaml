@@ -1,0 +1,65 @@
+# kube-prometheus-stack 91.4.0 on the hub (standalone option), Helm release kps in
+# namespace monitoring, installed by tpg-aks-infra scripts/steps/45-helm-addons.sh.
+prometheus:
+  service:
+    # The targets write through the remote-write gateway (Service
+    # tpg-remote-write: https, basic auth), not to Prometheus itself.
+    type: ClusterIP
+  prometheusSpec:
+    enableRemoteWriteReceiver: true
+    retention: 15d
+    externalLabels:
+      cluster: aks-tpg-hub
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: managed-csi-premium
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 100Gi
+
+grafana:
+  admin:
+    # Created by helm-addons.sh before the install (GRAFANA_ADMIN_PASSWORD or generated):
+    # keys admin-user and admin-password
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  service:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  persistence:
+    enabled: true
+    size: 10Gi
+  sidecar:
+    # Data sources written out explicitly: Prometheus (uid prometheus, the
+    # default, used by the dashboards and the Grafana-managed alert rules) and
+    # Alertmanager (uid alertmanager). Every target cluster's metrics are in this
+    # Prometheus, told apart by the label cluster.
+    datasources:
+      enabled: true
+      defaultDatasourceEnabled: true
+      isDefaultDatasource: true
+      name: Prometheus
+      uid: prometheus
+      alertmanager:
+        enabled: true
+        name: Alertmanager
+        uid: alertmanager
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      # ConfigMaps annotated grafana_folder go into that folder ("Tanzu Postgres")
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+
+alertmanager:
+  enabled: true

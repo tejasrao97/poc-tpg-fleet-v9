@@ -1,0 +1,24 @@
+# Vault Secrets Operator (community): Helm release vault-secrets-operator,
+# namespace vault-secrets-operator-system, chart hashicorp/vault-secrets-operator 1.5.1.
+# Installed on the hub (Argo CD repository Secrets) and on every target
+# (backup-storage and regsecret) by workflows/scripts/helm-addons.sh.
+#
+# No chart defaults are used for the connection and auth method: helm-addons.sh
+# creates VaultConnection tpg-vault and VaultAuth tpg-vault in namespace
+# tpg-vault (vault/tpg-vault-objects.yaml), so the fleet works the same way when
+# a compatible VSO installed by someone else is reused.
+controller:
+  replicas: 1
+  manager:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+defaultVaultConnection:
+  enabled: false
+
+defaultAuthMethod:
+  enabled: false

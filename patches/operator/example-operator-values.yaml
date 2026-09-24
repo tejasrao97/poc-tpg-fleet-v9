@@ -1,0 +1,12 @@
+# Example operator values patch (tpg-patch operatorValuesPatchFilePath).
+# Values of the vmware-sql-postgres-operator chart, loaded by the tpg-operator
+# Application as $fleet/<path> after its own values. The 4.x chart exposes few
+# values; resources is the one to use here. operatorImage and postgresImage are
+# refused: they follow the operator version (tpg-upgrade).
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi

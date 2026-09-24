@@ -1,0 +1,17 @@
+# Azure Monitor managed Prometheus: scrape Argo Workflows controller metrics
+# (custom tpg_* run metrics) on the hub.
+apiVersion: azmonitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argo-workflows-controller
+  namespace: kube-system
+spec:
+  namespaceSelector:
+    matchNames:
+      - argo
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: workflow-controller
+  endpoints:
+    - port: metrics
+      interval: 30s

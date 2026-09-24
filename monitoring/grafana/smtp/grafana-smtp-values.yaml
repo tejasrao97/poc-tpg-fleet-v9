@@ -1,0 +1,34 @@
+# OPTIONAL (standalone option): Grafana email notifications through SMTP.
+# Add to the hub kps release with KPS_HUB_EXTRA_VALUES=monitoring/grafana/smtp/grafana-smtp-values.yaml
+# (tpg-aks-infra scripts/run.sh --only addons) after creating:
+#   kubectl -n monitoring create secret generic grafana-smtp \
+#     --from-literal=user=<smtp-user> --from-literal=password=<smtp-password>
+grafana:
+  smtp:
+    existingSecret: grafana-smtp
+    userKey: user
+    passwordKey: password
+  grafana.ini:
+    smtp:
+      enabled: true
+      host: smtp.example.com:587
+      from_address: tpg-alerts@example.com
+      from_name: Tanzu Postgres POC
+      startTLS_policy: MandatoryStartTLS
+  alerting:
+    tpg-contact-points.yaml:
+      apiVersion: 1
+      contactPoints:
+        - orgId: 1
+          name: tpg-email
+          receivers:
+            - uid: tpg-email
+              type: email
+              settings:
+                addresses: dba-team@example.com
+    tpg-policies.yaml:
+      apiVersion: 1
+      policies:
+        - orgId: 1
+          receiver: tpg-email
+          group_by: ["grafana_folder", "alertname", "cluster"]

@@ -1,0 +1,29 @@
+# Vault server metrics (/v1/sys/metrics, unauthenticated access enabled in the
+# listener) for the tpg-vault-sealed alert. Scrapes the chart's vault Service,
+# which also publishes the pod while it is sealed (not ready).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vault
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - vault
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+      app.kubernetes.io/instance: vault
+    matchExpressions:
+      - key: vault-internal
+        operator: DoesNotExist
+  endpoints:
+    - port: https
+      path: /v1/sys/metrics
+      params:
+        format:
+          - prometheus
+      scheme: https
+      interval: 30s
+      tlsConfig:
+        insecureSkipVerify: true

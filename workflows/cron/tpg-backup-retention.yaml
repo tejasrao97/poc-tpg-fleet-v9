@@ -1,0 +1,25 @@
+# Daily backup retention sweep, 02:00 UTC (after the 00:00 backups): expire every
+# backup chain whose newest backup is older than backup.retentionDays (default 35).
+# Argo Workflows v4 removed the singular "schedule" field: use "schedules".
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: tpg-backup-retention
+  namespace: argo
+spec:
+  schedules:
+    - "0 2 * * *"
+  timezone: "UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  workflowSpec:
+    workflowTemplateRef:
+      name: tpg-backup-retention
+    arguments:
+      parameters:
+        - name: clusters
+          value: all
+        - name: dryRun
+          value: "false"

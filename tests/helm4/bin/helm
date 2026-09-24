@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""A stub `helm` that parses flags the way Helm 4 does.
+
+It exists so workflows/scripts/helm-addons.sh can be run end to end without a
+cluster, and so a Helm-3-only flag fails the test the same way it fails in the
+alpine/k8s:1.35.8 image: with helm's own error text and exit status 1.
+
+Release state comes from the JSON file in STUB_HELM_STATE:
+
+    {"releases": [{"name": "...", "namespace": "...", "chart": "cert-manager-v1.21.2",
+                   "app_version": "v1.21.2", "status": "deployed", "revision": 3,
+                   "values": {"crds": {"enabled": true}}}]}
+
+Every command run is appended to STUB_HELM_LOG, one JSON array per line, so a
+test can assert on what was called.
+"""
+import json
+import os
+import sys
+
+# ---------------------------------------------------------------- Helm 4 flags
+# Flags Helm 3 accepted and Helm 4 does not. The error text matches helm's.
+REMOVED = {
+    "list": {"-a": ("shorthand", "a"), "--all": ("long", "all")},
+    "ls": {"-a": ("shorthand", "a"), "--all": ("long", "all")},
+    "install": {"--atomic": ("long", "atomic"), "--force": ("long", "force"),
+                "--create-pods": ("long", "create-pods")},
+    "upgrade": {"--atomic": ("long", "atomic"), "--force": ("long", "force"),
+                "--create-pods": ("long", "create-pods")},
+    "rollback": {"--create-pods": ("long", "create-pods")},
+    "uninstall": {"--create-pods": ("long", "create-pods")},
+}
+LIST_STATES = {"--deployed", "--failed", "--pending", "--superseded",
+               "--uninstalled", "--uninstalling"}
+GLOBAL_VALUE_FLAGS = {"--kube-context", "--kubeconfig", "--namespace", "-n",
+                      "--registry-config", "--repository-config", "--repository-cache"}
+VALUE_FLAGS = GLOBAL_VALUE_FLAGS | {"-o", "--output", "--version", "--repo", "-f", "--values",
+                                    "--timeout", "--set", "--set-json", "--set-file",
+                                    "--username", "--password", "--description"}
+
+
+def die(msg, code=1):
+    sys.stderr.write("Error: %s\n" % msg)
+    sys.exit(code)
+
+
+def load_state():
+    path = os.environ.get("STUB_HELM_STATE", "")
+    if path and os.path.exists(path):
+        with open(path) as fh:
+            return json.load(fh)
+    return {"releases": []}
+
+
+def log(argv):
+    path = os.environ.get("STUB_HELM_LOG", "")
+    if path:
+        with open(path, "a") as fh:
+            fh.write(json.dumps(argv) + "\n")
+
+
+def parse(argv):
+    """-> (subcommand, positionals, flags dict)"""
+    sub, pos, flags, i = None, [], {}, 0
+    while i < len(argv):
+        t = argv[i]
+        if t.startswith("-"):
+            name, _, inline = t.partition("=")
+            if inline:
+                flags[name] = inline
+            elif name in VALUE_FLAGS and i + 1 < len(argv):
+                i += 1
+                flags[name] = argv[i]
+            else:
+                flags[name] = True
+            if sub is None and name in GLOBAL_VALUE_FLAGS and not inline:
+                pass
+        elif sub is None:
+            sub = t
+        else:
+            pos.append(t)
+        i += 1
+    return sub, pos, flags
+
+
+def check_removed(sub, argv):
+    for token in argv:
+        name = token.partition("=")[0]
+        bad = REMOVED.get(sub, {}).get(name)
+        if not bad:
+            continue
+        kind, letter = bad
+        if kind == "shorthand":
+            sys.stderr.write("Error: unknown shorthand flag: '%s' in %s\n" % (letter, token))
+        else:
+            sys.stderr.write("Error: unknown flag: --%s\n" % letter)
+        sys.stderr.write("Usage:  helm %s [flags]\n" % sub)
+        sys.exit(1)
+
+
+def main():
+    argv = sys.argv[1:]
+    log(argv)
+    sub, pos, flags = parse(argv)
+    if sub in ("version", "--version") or flags.get("--version"):
+        print("v4.0.0+gstub")
+        return 0
+    if sub is None:
+        die("no subcommand")
+    check_removed(sub, argv)
+    state = load_state()
+    rels = state.get("releases", [])
+    ns = flags.get("-n") or flags.get("--namespace")
+
+    if sub in ("list", "ls"):
+        # Helm 4 lists every state by default; the per-state flags narrow it.
+        wanted = {f[2:] for f in flags if f in LIST_STATES}
+        rows = rels if flags.get("-A") or flags.get("--all-namespaces") else [r for r in rels if r["namespace"] == ns]
+        if wanted:
+            rows = [r for r in rows if r.get("status", "deployed") in wanted]
+        out = [{"name": r["name"], "namespace": r["namespace"], "revision": str(r.get("revision", 1)),
+                "updated": "2026-09-21 00:00:00.0 +0000 UTC", "status": r.get("status", "deployed"),
+                "chart": r["chart"], "app_version": r.get("app_version", "")} for r in rows]
+        print(json.dumps(out) if (flags.get("-o") or flags.get("--output")) == "json" else
+              "\n".join("%s\t%s\t%s" % (r["name"], r["namespace"], r["chart"]) for r in rows))
+        return 0
+
+    if sub == "status":
+        name = pos[0] if pos else die("release name is required")
+        for r in rels:
+            if r["name"] == name and r["namespace"] == ns:
+                if (flags.get("-o") or flags.get("--output")) == "json":
+                    print(json.dumps({"name": r["name"], "version": r.get("revision", 1),
+                                      "namespace": r["namespace"],
+                                      "info": {"status": r.get("status", "deployed")},
+                                      "chart": {"metadata": {"name": r["chart"]}}}))
+                else:
+                    print("NAME: %s\nSTATUS: %s" % (name, r.get("status", "deployed")))
+                return 0
+        die("release: not found")
+
+    if sub == "get":
+        what = pos[0] if pos else die("get what?")
+        name = pos[1] if len(pos) > 1 else die("release name is required")
+        for r in rels:
+            if r["name"] == name and r["namespace"] == ns:
+                if what == "values":
+                    print(json.dumps(r.get("values", {})) if (flags.get("-o") or flags.get("--output")) == "json"
+                          else _yaml(r.get("values", {})))
+                    return 0
+                die("unsupported: helm get %s" % what)
+        die("release: not found")
+
+    if sub in ("upgrade", "install", "uninstall", "rollback", "template", "lint", "repo", "registry", "search"):
+        if sub == "registry" and pos and pos[0] == "login":
+            host = pos[1] if len(pos) > 1 else die("registry host is required")
+            if "/" in host:
+                die("registry login requires a registry host without a path, got %r" % host)
+            return 0
+        return 0
+
+    die("unsupported subcommand: %s" % sub)
+
+
+def _yaml(obj, indent=0):
+    pad = " " * indent
+    if not isinstance(obj, dict):
+        return pad + json.dumps(obj)
+    if not obj:
+        return "{}"
+    out = []
+    for k, v in obj.items():
+        if isinstance(v, dict) and v:
+            out.append("%s%s:" % (pad, k))
+            out.append(_yaml(v, indent + 2))
+        else:
+            out.append("%s%s: %s" % (pad, k, json.dumps(v)))
+    return "\n".join(out)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

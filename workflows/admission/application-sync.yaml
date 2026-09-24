@@ -1,0 +1,88 @@
+# Only the workflows sync the tpg target Applications.
+#
+# The operator, instance and platform Applications of every target cluster
+# (label tpg.fleet/component) are synced by the tpg workflows alone, through
+# the Argo CD API as the local account workflow-bot. A sync started anywhere
+# else would bypass the workflow gates: the pre-check, backups, the rollout
+# order, the pod watch, the re-application of operator manifest patches.
+#
+# Two layers refuse such a sync:
+#   1. Argo CD RBAC (argocd-rbac-cm, tpg-aks-infra argo/argocd-values.yaml and
+#      scripts/hub/existing/check-argo.sh): people are denied sync (which also
+#      covers rollback), override, update and delete on tpg/*.
+#   2. This policy, which also covers what RBAC cannot see: a kubectl edit of
+#      the Application object and a change that switches on automated sync.
+#
+# How Argo CD starts a sync (v3.5.3 server/application/application.go Sync and
+# Rollback, util/argo/argo.go SetAppOperation): argocd-server writes
+# .operation into the Application with an Update call made with its own
+# ServiceAccount, and records the caller in .operation.initiatedBy.username
+# (workflow-bot, or workflow-bot:apiKey for an API token). A new operation is
+# therefore accepted only when argocd-server writes it on behalf of workflow-bot.
+# The application controller removes .operation when it finishes; that change
+# and every other update (status, refresh annotations, the ApplicationSet
+# controller rewriting the spec) are not affected.
+#
+# Kubernetes 1.30 or later (AKS 1.30+). Rejections are reported to the caller,
+# for example in the Argo CD UI:
+#   ValidatingAdmissionPolicy 'tpg-application-sync' ... denied request: only the
+#   tpg workflows (Argo CD account workflow-bot) may sync tpg-aks-tpg-poc-01-operator
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: tpg-application-sync
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: argocd
+    resourceRules:
+      - apiGroups: ["argoproj.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["applications"]
+  matchConditions:
+    - name: tpg-target-application
+      expression: >-
+        has(object.metadata.labels) && 'tpg.fleet/component' in object.metadata.labels &&
+        object.metadata.labels['tpg.fleet/component'] in ['operator', 'instance', 'platform']
+  variables:
+    - name: newOperation
+      # an operation that did not exist before this request (CREATE with one, or
+      # UPDATE that adds or replaces it)
+      expression: >-
+        has(object.operation) &&
+        (oldObject == null || !has(oldObject.operation) || oldObject.operation != object.operation)
+    - name: byWorkflowBot
+      expression: >-
+        request.userInfo.username == 'system:serviceaccount:argocd:argocd-server' &&
+        has(object.operation.initiatedBy) && has(object.operation.initiatedBy.username) &&
+        (object.operation.initiatedBy.username == 'workflow-bot' ||
+         object.operation.initiatedBy.username.startsWith('workflow-bot:'))
+    - name: automated
+      expression: >-
+        has(object.spec.syncPolicy) && has(object.spec.syncPolicy.automated) &&
+        !(has(object.spec.syncPolicy.automated.enabled) && object.spec.syncPolicy.automated.enabled == false)
+  validations:
+    - expression: "!variables.newOperation || variables.byWorkflowBot"
+      messageExpression: >-
+        'only the tpg workflows (Argo CD account workflow-bot) may sync ' + object.metadata.name +
+        '; this operation was requested by ' +
+        (has(object.operation.initiatedBy) && has(object.operation.initiatedBy.username)
+          ? object.operation.initiatedBy.username : 'an unknown user') +
+        ' through ' + request.userInfo.username + '. Run the matching tpg workflow instead'
+      reason: Forbidden
+    - expression: "!variables.automated"
+      messageExpression: >-
+        'automated sync cannot be enabled on ' + object.metadata.name +
+        ': the tpg workflows decide when target Applications are synced'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: tpg-application-sync
+spec:
+  policyName: tpg-application-sync
+  validationActions: ["Deny"]

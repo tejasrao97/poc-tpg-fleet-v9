@@ -1,0 +1,178 @@
+# Keys accepted in the clusterMap input of the tpg workflows.
+#
+# clusterMap is optional on tpg-day0, tpg-upgrade, tpg-patch, tpg-backup,
+# tpg-backup-retention, tpg-scale-instance, tpg-delete-instance and
+# tpg-delete-apps. It selects the targets (clusters and the instances on each)
+# and carries per-cluster and per-instance values:
+#
+#   <cluster>:                     a registered cluster
+#     <cluster key>: <value>       keys under "cluster" below
+#     instances:
+#       <instance>:                a DNS label (namespace pg-<instance>)
+#         <instance key>: <value>  keys under "instance" below
+#
+# Written as YAML or JSON. Every key is checked by workflows/scripts/clustermap.py
+# in the validate step: its type, whether the workflow accepts it, and whether a
+# required value is present (the map key, else the workflow input named in
+# "flag"). An unknown key fails the run with the closest known key.
+#
+# Adding a key is one entry here:
+#   type       string | name | boolean | integer | posint | quantity | enum |
+#              operatorVersion | postgresVersion | pathList
+#   values     enum only: the accepted values
+#   prefix     pathList only: every path must start with it
+#   workflows  workflow -> required | optional | guard
+#              required: the key or the workflow input "flag" must be set
+#              optional: used when set, otherwise the workflow input "flag" applies
+#              guard:    when set, a target whose live value differs is skipped
+#                        (SKIPPED_VERSION_MISMATCH); nothing is changed
+#   flag       the workflow input that supplies the default (default: the key name)
+#   fleet      tpg-day0 only: clusters/fleet.yaml paths the value is written to,
+#              relative to clusters.<cluster> or clusters.<cluster>.instances.<instance>
+#   format     tpg-day0 only: how the value is written: string (default) | number |
+#              boolean | operatorVersion | postgresVersion
+# A key with "fleet" needs no code: fleet-day0.sh writes it. Keys without "fleet"
+# are read by the step script of each workflow that lists them.
+version: 1
+
+workflows:
+  - day0
+  - upgrade
+  - patch
+  - backup
+  - backup-retention
+  - scale
+  - delete-instance
+  - delete-apps
+
+cluster:
+  operatorVersion:
+    type: operatorVersion
+    workflows: {day0: required, upgrade: optional}
+    fleet: [.operator.version]
+    format: operatorVersion
+  maxReadReplicas:
+    type: integer
+    workflows: {day0: optional}
+    flag: ""
+    fleet: [.cluster.maxReadReplicas]
+    format: number
+  operatorValuesPatchFilePath:
+    type: pathList
+    prefix: patches/operator/
+    workflows: {patch: optional}
+  operatorManifestPatchFilePath:
+    type: pathList
+    prefix: patches/operator/
+    workflows: {patch: optional}
+  patchMode:
+    type: enum
+    values: [append, replace, remove]
+    workflows: {patch: optional}
+  deleteOperator:
+    type: boolean
+    workflows: {delete-apps: optional}
+    flag: ""
+  force:
+    type: boolean
+    workflows: {delete-apps: optional}
+
+instance:
+  postgresVersion:
+    type: postgresVersion
+    workflows:
+      day0: required
+      upgrade: optional
+      patch: guard
+      backup: guard
+      backup-retention: guard
+      scale: guard
+      delete-instance: guard
+      delete-apps: guard
+    fleet: [.instance.postgresVersion]
+    format: postgresVersion
+  highAvailability:
+    type: boolean
+    workflows: {day0: required}
+    fleet: [.instance.highAvailability.enabled]
+    format: boolean
+  readReplicas:
+    type: integer
+    workflows: {day0: optional}
+    fleet: [.instance.highAvailability.readReplicas]
+    format: number
+  storageSize:
+    type: quantity
+    workflows: {day0: optional}
+    fleet: [.instance.storageSize]
+  walStorageSize:
+    type: quantity
+    workflows: {day0: optional}
+    fleet: [.instance.walStorageSize]
+  storageClass:
+    type: name
+    workflows: {day0: optional}
+    fleet: [.instance.storageClassName]
+  cpu:
+    type: quantity
+    workflows: {day0: optional}
+    fleet: [.instance.resources.data.requests.cpu, .instance.resources.data.limits.cpu]
+  memory:
+    type: quantity
+    workflows: {day0: optional}
+    fleet: [.instance.resources.data.requests.memory, .instance.resources.data.limits.memory]
+  backupSchedule:
+    # fleet: included in the backup CronWorkflows; none: backup.scheduled false
+    type: enum
+    values: [fleet, none]
+    workflows: {day0: optional}
+  enableSSL:
+    type: boolean
+    workflows: {day0: optional}
+    flag: backupEnableSSL
+    fleet: [.backup.enableSSL]
+    format: boolean
+  postgresPatchFilePath:
+    type: pathList
+    prefix: charts/tpg-instance/patches/
+    workflows: {patch: optional}
+  valuesPatchFilePath:
+    type: pathList
+    prefix: charts/tpg-instance/patches/
+    workflows: {patch: optional}
+  patchMode:
+    type: enum
+    values: [append, replace, remove]
+    workflows: {patch: optional}
+  backupType:
+    type: enum
+    values: [full, incremental, differential]
+    workflows: {backup: optional}
+  backupTimeoutSeconds:
+    type: posint
+    workflows: {backup: optional}
+  retentionDays:
+    type: posint
+    workflows: {backup-retention: optional}
+  replicas:
+    type: integer
+    workflows: {scale: required}
+  enableHAIfNeeded:
+    type: boolean
+    workflows: {scale: optional}
+  preUpgradeBackup:
+    type: boolean
+    workflows: {upgrade: optional}
+  allowMajor:
+    type: boolean
+    workflows: {upgrade: optional}
+  purgePvcs:
+    type: boolean
+    workflows: {delete-instance: optional, delete-apps: optional}
+  purgeNamespace:
+    type: boolean
+    workflows: {delete-instance: optional, delete-apps: optional}
+  finalBackup:
+    type: enum
+    values: ["true", "false", required]
+    workflows: {delete-instance: optional, delete-apps: optional}

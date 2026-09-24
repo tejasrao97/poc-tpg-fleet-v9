@@ -1,0 +1,3 @@
+*.bak
+.work/
+__pycache__/

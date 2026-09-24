@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tpg-platform
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            tpg.fleet/managed: "true"
+  template:
+    metadata:
+      name: "tpg-{{.name}}-platform"
+      labels:
+        tpg.fleet/cluster: "{{.name}}"
+        tpg.fleet/wave: '{{index .metadata.labels "tpg.fleet/wave"}}'
+        tpg.fleet/component: platform
+    spec:
+      project: tpg
+      source:
+        repoURL: https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+        targetRevision: main
+        path: platform/base
+        # The managed-disk SKU of tpg-data-retain comes from Terraform
+        # (postgres_data_disk_sku) through the label tpg.fleet/dataDiskSku on
+        # the Argo CD cluster Secret, written by the register step. A cluster
+        # Secret without that label keeps the value in the base file.
+        kustomize:
+          patches:
+            - target:
+                kind: StorageClass
+                name: tpg-data-retain
+              patch: |-
+                - op: replace
+                  path: /parameters/skuName
+                  value: '{{ $sku := "Premium_ZRS" }}{{ with index .metadata.labels "tpg.fleet/dataDiskSku" }}{{ $sku = . }}{{ end }}{{ $sku }}'
+      destination:
+        server: "{{.server}}"
+        namespace: default
+      syncPolicy:
+        syncOptions:
+          - ServerSideApply=true

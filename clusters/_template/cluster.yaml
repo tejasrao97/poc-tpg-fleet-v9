@@ -1,0 +1,31 @@
+# Cluster defaults shared by every target cluster.
+#
+# The tpg-instances ApplicationSet passes this file to charts/tpg-instance as
+# the first value file; the workflows read it for cluster settings. Override
+# any key for one cluster under clusters.<name> in clusters/fleet.yaml.
+cluster:
+  # Upper bound for tpg-scale-instance (read replicas per instance)
+  maxReadReplicas: 3
+
+backup:
+  # Empty: pg-backups-<cluster> (the container Terraform creates per target)
+  container: ""
+  endpoint: blob.core.windows.net
+  # PostgresBackupLocation enableSSL: false talks plain HTTP to Azure Blob (the
+  # storage account must accept HTTP: Terraform backup_storage_https_only =
+  # false), true uses HTTPS. Override per cluster or per instance under backup in
+  # fleet.yaml, or with the tpg-day0 input backupEnableSSL.
+  enableSSL: false
+  # Schedule (CronWorkflows): full on Sunday, incremental Monday to Saturday.
+  # pgBackRest keeps a chain (a full and the incrementals after it) together:
+  # an incremental depends on every earlier backup of its chain, so a chain
+  # always expires as a whole.
+  # Count limit, applied by the operator (PostgresBackupLocation retentionPolicy):
+  # keep the newest fullRetention chains.
+  fullRetention: 4
+  # Differential backups are only taken by hand (tpg-backup backupType=differential)
+  diffRetention: 6
+  # Age limit, applied by tpg-backup-retention (daily CronWorkflow): expire every
+  # chain whose newest backup is older than retentionDays. The newest chain is
+  # always kept. Override per cluster or per instance under backup in fleet.yaml.
+  retentionDays: 35

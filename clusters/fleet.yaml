@@ -1,0 +1,27 @@
+# Postgres deployments per target cluster: the only per-cluster file in this
+# repository. Every cluster uses clusters/_template/cluster.yaml and
+# clusters/_template/instance.yaml; entries here hold only the differences.
+#
+#   clusters.<cluster>                  cluster registered by tpg-aks-infra
+#                                       (Argo CD label tpg.fleet/managed=true)
+#     operator.version                  required: operator chart version (OCI tag)
+#     cluster / backup                  optional overrides of _template/cluster.yaml
+#     instances.<instance>              one Postgres instance, namespace pg-<instance>
+#       instance / backup               overrides of _template/instance.yaml
+#
+#       patches.postgres / .values    patch file references (tpg-patch), paths
+#                                     relative to charts/tpg-instance/
+#     operator.patches.values         operator chart value files (tpg-patch), repository paths
+#     operator.patches.manifests      operator manifest patches (tpg-patch), repository paths
+#
+# The workflows edit this file (tpg-day0, tpg-upgrade, tpg-patch,
+# tpg-scale-instance, tpg-delete-apps and tpg-delete-instance). Edit it by
+# hand only while no workflow is running, then commit and push.
+# The deployment wave is the tpg.fleet/wave label on the cluster Secret.
+#
+# It starts empty: tpg-day0 adds each cluster and instance. An entry declares
+# what the cluster should run, so an example left here would look like real
+# state. clusters/fleet.example.yaml shows a filled-in file. tpg-day0 compares
+# its inputs with what runs on the cluster, not with this file (a version that
+# nothing runs yet is replaced; a running one is changed by tpg-upgrade).
+clusters: {}

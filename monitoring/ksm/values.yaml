@@ -1,0 +1,99 @@
+# kube-state-metrics (chart prometheus-community/kube-state-metrics 8.5.0) with
+# custom resource state metrics for Tanzu Postgres, backups and restores.
+# Used by both monitoring options on every target cluster.
+rbac:
+  extraRules:
+    - apiGroups: ["sql.tanzu.vmware.com"]
+      resources: ["postgres", "postgresbackups", "postgresrestores"]
+      verbs: ["list", "watch"]
+
+prometheus:
+  monitor:
+    # The standalone option enables the ServiceMonitor (helm-addons.sh --set).
+    enabled: false
+
+customResourceState:
+  enabled: true
+  config:
+    kind: CustomResourceStateMetrics
+    spec:
+      resources:
+        - groupVersionKind:
+            group: sql.tanzu.vmware.com
+            version: v1
+            kind: Postgres
+          metricNamePrefix: tanzu_postgres
+          labelsFromPath:
+            instance_name: [metadata, name]
+            instance_namespace: [metadata, namespace]
+          metrics:
+            - name: instance_state
+              help: Postgres instance status.currentState
+              each:
+                type: StateSet
+                stateSet:
+                  labelName: state
+                  path: [status, currentState]
+                  list: [Created, Pending, Unavailable, Running]
+            - name: instance_read_replicas
+              help: Desired read replicas (spec.highAvailability.readReplicas)
+              each:
+                type: Gauge
+                gauge:
+                  path: [spec, highAvailability, readReplicas]
+                  nilIsZero: true
+        - groupVersionKind:
+            group: sql.tanzu.vmware.com
+            version: v1
+            kind: PostgresBackup
+          metricNamePrefix: tanzu_postgres
+          labelsFromPath:
+            backup_name: [metadata, name]
+            instance_namespace: [metadata, namespace]
+            instance_name: [spec, sourceInstance, name]
+            backup_type: [spec, type]
+          metrics:
+            - name: backup_phase
+              help: PostgresBackup status.phase
+              each:
+                type: StateSet
+                stateSet:
+                  labelName: phase
+                  path: [status, phase]
+                  list: [Pending, Running, Succeeded, Failed]
+            - name: backup_created_timestamp
+              help: PostgresBackup creation time (unix seconds)
+              each:
+                type: Gauge
+                gauge:
+                  path: [metadata, creationTimestamp]
+            - name: backup_completed_timestamp
+              help: PostgresBackup status.timeCompleted (unix seconds)
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, timeCompleted]
+        - groupVersionKind:
+            group: sql.tanzu.vmware.com
+            version: v1
+            kind: PostgresRestore
+          metricNamePrefix: tanzu_postgres
+          labelsFromPath:
+            restore_name: [metadata, name]
+            instance_namespace: [metadata, namespace]
+            target_instance: [spec, targetInstance, name]
+          metrics:
+            - name: restore_phase
+              help: PostgresRestore status.phase
+              each:
+                type: StateSet
+                stateSet:
+                  labelName: phase
+                  path: [status, phase]
+                  list: [Pending, Running, WaitForPrimary, RecreatingSecondary, Finalizing, Succeeded, Failed]
+            - name: restore_created_timestamp
+              help: PostgresRestore creation time (unix seconds)
+              each:
+                type: Gauge
+                gauge:
+                  path: [metadata, creationTimestamp]

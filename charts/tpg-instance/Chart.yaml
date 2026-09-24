@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tpg-instance
+description: One Tanzu for Postgres instance and its Azure Blob backup location
+type: application
+version: 1.0.0
+appVersion: "4.5.0"

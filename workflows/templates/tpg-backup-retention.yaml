@@ -1,0 +1,164 @@
+# Day 1: age-based backup retention. Expires every backup chain (a full backup and the
+# incremental and differential backups taken after it) whose newest backup is older
+# than backup.retentionDays (clusters/fleet.yaml, default 35 days). The newest chain is
+# always kept. Runs daily from the tpg-backup-retention CronWorkflow; the operator's
+# count limit (fullRetention) applies independently.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-backup-retention
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Day 1: expire backup chains older than backup.retentionDays (fleet.yaml, default 35 days),
+      always keeping the newest chain. dryRun=true lists what would be expired.
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  parallelism: 10
+  arguments:
+    parameters:
+    - name: clusters
+      description: "List: comma-separated registered clusters, or all (without clusterMap)"
+      value: "all"
+    - name: instances
+      description: "List: instances, or all / empty for every instance (without clusterMap)"
+      value: ""
+    - name: clusterMap
+      description: "Map (YAML or JSON): cluster -> {instances: {instance -> {retentionDays}}}"
+      value: ""
+    - name: retentionDays
+      description: "Override backup.retentionDays for this run (empty: fleet.yaml value per instance)"
+      value: ""
+    - name: dryRun
+      description: "true: list the chains that would be expired; change nothing"
+      value: "false"
+      enum: ["false", "true"]
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: discover
+        templateRef:
+          name: tpg-lib
+          template: discover
+        arguments:
+          parameters:
+            - name: clusters
+              value: "{{steps.validate.outputs.parameters.selection}}"
+            - name: filter
+              value: any
+            - name: instances
+              value: "{{workflow.parameters.instances}}"
+            - name: clusterMap
+              value: "{{workflow.parameters.clusterMap}}"
+    - - name: expire
+        template: expire-instance
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item.cluster}}"
+            - name: instance
+              value: "{{item.instance}}"
+            - name: retentionDays
+              value: "{{item.retentionDays}}"
+        withParam: "{{steps.discover.outputs.parameters.instanceItems}}"
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    outputs:
+      parameters:
+        - name: selection
+          valueFrom:
+            path: /tmp/selection
+            default: ""
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, backup-retention]
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_INSTANCES, value: "{{workflow.parameters.instances}}"}
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_RETENTION_DAYS, value: "{{workflow.parameters.retentionDays}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: expire-instance
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    inputs:
+      parameters:
+        - name: cluster
+        - name: instance
+        - name: retentionDays
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_backup_retention_result
+          help: "Backup retention result per instance"
+          labels:
+            - key: cluster
+              value: "{{inputs.parameters.cluster}}"
+            - key: instance_name
+              value: "{{inputs.parameters.instance}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/backup-retention.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+        - "{{inputs.parameters.instance}}"
+        - "{{inputs.parameters.retentionDays}}"
+        - "{{workflow.parameters.dryRun}}"
+        - "{{workflow.parameters.retentionDays}}"
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              value: instance

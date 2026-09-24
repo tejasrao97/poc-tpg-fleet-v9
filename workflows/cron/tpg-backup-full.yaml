@@ -1,0 +1,26 @@
+# Weekly full backup, Sunday 00:00 UTC: starts a new backup chain (design decision D16).
+# Argo Workflows v4 removed the singular "schedule" field: use "schedules".
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: tpg-backup-full
+  namespace: argo
+spec:
+  schedules:
+    - "0 0 * * 0"
+  timezone: "UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  workflowSpec:
+    workflowTemplateRef:
+      name: tpg-backup
+    arguments:
+      parameters:
+        - name: backupType
+          value: full
+        - name: clusters
+          value: all
+        - name: scheduledOnly
+          value: "true"

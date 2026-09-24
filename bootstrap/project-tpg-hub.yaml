@@ -1,0 +1,30 @@
+# Hub-only Applications: tpg-hub-workflows (WorkflowTemplates, CronWorkflows,
+# the scripts ConfigMap, the workflow RBAC and the admission policies) and, with
+# the Azure Monitor option, tpg-hub-monitoring.
+#
+# They are kept out of project tpg on purpose. Argo CD RBAC denies people sync,
+# override, update and delete on tpg/* (tpg-aks-infra argo/argocd-values.yaml),
+# because the target Applications in project tpg are synced by the workflows
+# only; the hub Applications stay manageable by an Argo CD admin (both sync
+# automatically, and an admin can sync them after a change in Git).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tpg-hub
+  namespace: argocd
+spec:
+  description: Tanzu for Postgres fleet - hub components (workflows, admission policies, hub monitoring)
+  sourceRepos:
+    - https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+  destinations:
+    # The hub only
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  clusterResourceWhitelist:
+    # ValidatingAdmissionPolicy and ValidatingAdmissionPolicyBinding
+    # (workflows/admission), and the cluster-scoped objects of hub monitoring
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

@@ -1,0 +1,16 @@
+# Azure Monitor managed Prometheus: scrape the tpg kube-state-metrics release.
+apiVersion: azmonitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tpg-kube-state-metrics
+  namespace: kube-system
+spec:
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: tpg-ksm
+  endpoints:
+    - port: http
+      interval: 30s

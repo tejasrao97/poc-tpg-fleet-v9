@@ -1,0 +1,246 @@
+# Day 1: patch Tanzu Postgres instances and operators that are already deployed.
+# The patch files live in the fleet repository and clusters/fleet.yaml references
+# them (never copies them); Argo CD renders them (instances, operator values) or
+# the workflow applies them with server-side apply (operator manifests). Canary
+# first, then batches of maxParallel (rolloutMode).
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-patch
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Day 1: patch deployed Postgres instances (partial Postgres manifests or chart values)
+      and operators (chart values or partial manifests of the objects the chart renders).
+      Checks and dry-runs every patch on its target first, writes the references to
+      clusters/fleet.yaml, then syncs canary first and in batches of maxParallel.
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  parallelism: 20
+  arguments:
+    parameters:
+    # ---- targets: clusterMap, or clusters (and instances)
+    - name: clusterMap
+      description: "Map (YAML or JSON): cluster -> {operatorValuesPatchFilePath, operatorManifestPatchFilePath, patchMode, instances: {instance -> {postgresPatchFilePath, valuesPatchFilePath, patchMode}}}"
+      value: ""
+    - name: clusters
+      description: "List: comma-separated registered clusters, or all (without clusterMap)"
+      value: ""
+    - name: instances
+      description: "List: comma-separated instances, or all (without clusterMap; needed for instance patch files)"
+      value: ""
+    # ---- patch files (defaults of every target; clusterMap keys override them)
+    - name: postgresPatchFilePath
+      description: "List (paths): partial Postgres manifests under charts/tpg-instance/patches/"
+      value: ""
+    - name: valuesPatchFilePath
+      description: "List (paths): chart values fragments under charts/tpg-instance/patches/"
+      value: ""
+    - name: operatorValuesPatchFilePath
+      description: "List (paths): operator chart values under patches/operator/"
+      value: ""
+    - name: operatorManifestPatchFilePath
+      description: "List (paths): partial manifests of operator objects under patches/operator/"
+      value: ""
+    - name: patchMode
+      description: "append: add the files; replace: the files become the list; remove: the files leave the list"
+      value: append
+      enum: ["append", "replace", "remove"]
+    # ---- mandatory
+    - name: pushMode
+      description: "direct: push to the fleet branch; pr: open a pull request and continue after it is merged"
+      value: ""
+      enum: ["", "direct", "pr"]
+    # ---- optional
+    - name: maxParallel
+      value: "1"
+    - name: rolloutMode
+      description: "canary: one wave-0 cluster first, then batches of maxParallel; batches: no canary, batches of maxParallel; all: every selected cluster at once"
+      value: canary
+      enum: ["canary", "batches", "all"]
+    - name: dryRun
+      description: "true: check the files, show the fleet.yaml change and dry-run every patch on its target; change nothing"
+      value: "false"
+      enum: ["false", "true"]
+    - name: timeoutSeconds
+      description: "Per operator and per instance"
+      value: "1800"
+    - name: prTimeoutSeconds
+      value: "3600"
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: discover
+        templateRef:
+          name: tpg-lib
+          template: discover
+        arguments:
+          parameters:
+            - name: clusters
+              value: "{{steps.validate.outputs.parameters.selection}}"
+            - name: filter
+              value: pairs
+            - name: instances
+              value: "{{workflow.parameters.instances}}"
+            - name: clusterMap
+              value: "{{workflow.parameters.clusterMap}}"
+    - - name: plan-patch
+        template: plan-patch
+    - - name: plan
+        templateRef:
+          name: tpg-lib
+          template: plan-batches
+        arguments:
+          parameters:
+            - name: requirePrecheck
+              value: "true"
+            - name: maxParallel
+              value: "{{workflow.parameters.maxParallel}}"
+            - name: rolloutMode
+              value: "{{workflow.parameters.rolloutMode}}"
+    - - name: patch
+        template: run-batches
+        when: "{{workflow.parameters.dryRun}} == false && {{steps.plan.outputs.parameters.hasBatches}} == true"
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{steps.plan.outputs.parameters.batches}}"
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    outputs:
+      parameters:
+        - name: selection
+          valueFrom:
+            path: /tmp/selection
+            default: ""
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, patch]
+      env: &patch-env
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_INSTANCES, value: "{{workflow.parameters.instances}}"}
+        - {name: P_POSTGRES_PATCH, value: "{{workflow.parameters.postgresPatchFilePath}}"}
+        - {name: P_VALUES_PATCH, value: "{{workflow.parameters.valuesPatchFilePath}}"}
+        - {name: P_OPERATOR_VALUES_PATCH, value: "{{workflow.parameters.operatorValuesPatchFilePath}}"}
+        - {name: P_OPERATOR_MANIFEST_PATCH, value: "{{workflow.parameters.operatorManifestPatchFilePath}}"}
+        - {name: P_PATCH_MODE, value: "{{workflow.parameters.patchMode}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_MAX_PARALLEL, value: "{{workflow.parameters.maxParallel}}"}
+        - {name: P_ROLLOUT_MODE, value: "{{workflow.parameters.rolloutMode}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.timeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: plan-patch
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/patch-plan.sh]
+      args:
+        - "{{workflow.name}}"
+      env: *patch-env
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: run-batches
+    inputs:
+      parameters:
+        - name: batches
+    steps:
+    - - name: split
+        templateRef:
+          name: tpg-lib
+          template: split-first
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{inputs.parameters.batches}}"
+    - - name: batch
+        template: patch-cluster
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item}}"
+        withParam: "{{steps.split.outputs.parameters.first}}"
+    - - name: next
+        template: run-batches
+        when: "{{steps.split.outputs.parameters.hasRest}} == true"
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{steps.split.outputs.parameters.rest}}"
+  - name: patch-cluster
+    inputs:
+      parameters:
+        - name: cluster
+    synchronization:
+      mutexes:
+        - name: "tpg-cluster-{{inputs.parameters.cluster}}"
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_patch_result
+          help: "Patch result per cluster (last recorded result on that cluster)"
+          labels:
+            - key: cluster
+              value: "{{inputs.parameters.cluster}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/patch-cluster.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+        - "{{workflow.parameters.timeoutSeconds}}"
+      env: *patch-env
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              value: steps

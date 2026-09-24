@@ -1,0 +1,112 @@
+# One Application per Postgres instance: tpg-<cluster>-<instance>.
+#
+# Generator: registered clusters (label tpg.fleet/managed=true) x clusters/fleet.yaml,
+# then one element per clusters.<cluster>.instances.<instance> entry. A cluster
+# without an entry in fleet.yaml gets no instance Applications.
+#
+# Helm values, lowest to highest precedence:
+#   charts/tpg-instance/values.yaml      chart defaults
+#   clusters/_template/cluster.yaml      cluster defaults for every cluster
+#   clusters/_template/instance.yaml     instance defaults for every instance
+#   values (below)                       cluster.name, pg-backups-<cluster>, and the
+#                                        cluster and instance overrides from fleet.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tpg-instances
+  namespace: argocd
+spec:
+  # Removing an instance from fleet.yaml (tpg-delete-instance, tpg-delete-apps)
+  # deletes the Application only; the database objects stay until the workflow
+  # removes them explicitly.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - matrix:
+              generators:
+                - clusters:
+                    selector:
+                      matchLabels:
+                        tpg.fleet/managed: "true"
+                - git:
+                    repoURL: https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+                    revision: main
+                    files:
+                      - path: clusters/fleet.yaml
+          - list:
+              # [{"instance": {"name": "<instance>", "values": {...}}}, ...] for this cluster
+              elementsYaml: >-
+                {{- $items := list -}}
+                {{- range $name, $values := (dig "clusters" .name "instances" (dict) .) -}}
+                {{- $items = append $items (dict "instance" (dict "name" $name "values" (default (dict) $values))) -}}
+                {{- end -}}
+                {{- toJson $items -}}
+  template:
+    metadata:
+      name: "tpg-{{.name}}-{{.instance.name}}"
+      labels:
+        tpg.fleet/cluster: "{{.name}}"
+        tpg.fleet/wave: '{{index .metadata.labels "tpg.fleet/wave"}}'
+        tpg.fleet/component: instance
+        tpg.fleet/instance: "{{.instance.name}}"
+    spec:
+      project: tpg
+      source:
+        repoURL: https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+        targetRevision: main
+        path: charts/tpg-instance
+        helm:
+          valueFiles:
+            - ../../clusters/_template/cluster.yaml
+            - ../../clusters/_template/instance.yaml
+          values: >-
+            {{- $cluster := dig "clusters" .name (dict) . -}}
+            {{- $base := dict "cluster" (dict "name" .name) "backup" (dict "container" (printf "pg-backups-%s" .name)) -}}
+            {{- $clusterOverrides := deepCopy (omit $cluster "instances" "operator") -}}
+            {{- $instance := deepCopy .instance.values -}}
+            {{- $_ := set $instance "instance" (mergeOverwrite (dig "instance" (dict) $instance) (dict "name" .instance.name)) -}}
+            {{- toJson (mergeOverwrite $base $clusterOverrides $instance) -}}
+      destination:
+        server: "{{.server}}"
+        namespace: "pg-{{.instance.name}}"
+      # PostgresBackupLocation fields the operator's CRD serializes with
+      # omitempty: the API server stores nothing for forcePathStyle=false or an
+      # empty additionalParameters, so an Application that declares them can
+      # never reach Synced. The chart no longer writes those defaults
+      # (charts/tpg-instance/templates/backuplocation.yaml); these entries keep
+      # the Application Synced on a cluster whose operator version drops or adds
+      # them anyway, and they are scoped to the two fields, so a real change to
+      # either one still shows up as a diff on the rest of the object.
+      #
+      # enableSSL: the chart always writes it (true or false), and the CRD drops
+      # "false" the same way when the operator writes the object back, so it is
+      # ignored here too.
+      #
+      # Postgres spec.postgresVersion: a running instance changes version only
+      # through a PostgresVersionUpgrade (tpg-upgrade component=postgres), which
+      # owns that field. Argo CD must not try to change it: the operator's
+      # admission webhook rejected such a sync ("postgresVersion.name cannot be
+      # changed to use a different major version") while the upgrade was still
+      # being finished. With RespectIgnoreDifferences the field is left out of
+      # the sync of an existing instance; a new instance is still created with
+      # the version from Git, and tpg-upgrade and verify check the live version.
+      ignoreDifferences:
+        - group: sql.tanzu.vmware.com
+          kind: PostgresBackupLocation
+          jsonPointers:
+            - /spec/additionalParameters
+            - /spec/storage/azure/forcePathStyle
+            - /spec/storage/azure/enableSSL
+        - group: sql.tanzu.vmware.com
+          kind: Postgres
+          jsonPointers:
+            - /spec/postgresVersion
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true

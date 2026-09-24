@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tpg-hub-monitoring
+  namespace: argocd
+spec:
+  project: tpg-hub
+  source:
+    repoURL: https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+    targetRevision: main
+    path: monitoring/azure/hub
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false

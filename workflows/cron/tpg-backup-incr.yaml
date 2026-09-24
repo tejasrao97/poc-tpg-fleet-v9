@@ -1,0 +1,29 @@
+# Daily incremental backup, Monday to Saturday 00:00 UTC. Each incremental holds
+# the changes since the previous backup of any type, so it stays small; it
+# depends on every earlier backup back to the Sunday full (tpg-backup-full), and
+# the whole chain expires together (fullRetention, tpg-backup-retention).
+# Argo Workflows v4 removed the singular "schedule" field: use "schedules".
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: tpg-backup-incr
+  namespace: argo
+spec:
+  schedules:
+    - "0 0 * * 1-6"
+  timezone: "UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 5
+  workflowSpec:
+    workflowTemplateRef:
+      name: tpg-backup
+    arguments:
+      parameters:
+        - name: backupType
+          value: incremental
+        - name: clusters
+          value: all
+        - name: scheduledOnly
+          value: "true"

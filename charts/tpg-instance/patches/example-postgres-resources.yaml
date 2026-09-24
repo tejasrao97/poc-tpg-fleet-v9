@@ -1,0 +1,17 @@
+# Example postgres patch file (tpg-patch postgresPatchFilePath).
+# A partial Postgres manifest: kind Postgres and a spec fragment. The chart
+# merges spec into the rendered Postgres object of every instance that lists
+# this file: maps key by key, any other value (including false, 0 and "")
+# replaces the rendered one, a list replaces the whole list, null removes a key.
+# tpg-patch refuses spec.postgresVersion (tpg-upgrade), spec.highAvailability
+# (tpg-scale-instance), spec.storageClassName and a smaller storageSize or
+# walStorageSize.
+apiVersion: sql.tanzu.vmware.com/v1
+kind: Postgres
+spec:
+  resources:
+    data:
+      requests:
+        memory: 4Gi
+      limits:
+        memory: 8Gi

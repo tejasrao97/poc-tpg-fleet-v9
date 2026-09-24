@@ -1,0 +1,67 @@
+{
+  "uid": "tpg-restore-failed",
+  "title": "Postgres restore failed (24h)",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "relativeTimeRange": {
+        "from": 900,
+        "to": 0
+      },
+      "datasourceUid": "${DATASOURCE_UID}",
+      "model": {
+        "refId": "A",
+        "expr": "count by (cluster, instance_namespace, target_instance) ((tanzu_postgres_restore_phase{phase=\"Failed\"} == 1) and on (cluster, instance_namespace, restore_name) ((time() - tanzu_postgres_restore_created_timestamp) < 86400))",
+        "instant": true,
+        "range": false,
+        "intervalMs": 60000,
+        "maxDataPoints": 43200
+      }
+    },
+    {
+      "refId": "B",
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "B",
+        "type": "reduce",
+        "expression": "A",
+        "reducer": "last",
+        "settings": {
+          "mode": "dropNN"
+        }
+      }
+    },
+    {
+      "refId": "C",
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "C",
+        "type": "threshold",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "gt",
+              "params": [
+                0
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "noDataState": "OK",
+  "execErrState": "Error",
+  "for": "0m",
+  "labels": {
+    "severity": "critical"
+  },
+  "annotations": {
+    "summary": "A restore to {{ $labels.cluster }}/{{ $labels.target_instance }} failed in the last 24 hours"
+  },
+  "folderUID": "tpg-postgres",
+  "ruleGroup": "tpg-postgres",
+  "orgID": 1
+}

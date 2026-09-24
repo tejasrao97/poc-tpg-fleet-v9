@@ -1,0 +1,18 @@
+# Managed-disk StorageClass for Postgres data and WAL volumes, and for the
+# Vault server on the hub. Retain keeps the disk when a PVC is deleted
+# (design decision D15).
+#
+# skuName comes from Terraform (postgres_data_disk_sku, default Premium_ZRS).
+# The tpg-platform ApplicationSet patches it per cluster from the label
+# tpg.fleet/dataDiskSku on the Argo CD cluster Secret, and 35-vault.sh renders
+# it on the hub. The ZRS options need a region with availability zones.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: tpg-data-retain
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Premium_ZRS
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer

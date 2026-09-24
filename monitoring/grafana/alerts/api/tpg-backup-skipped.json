@@ -1,0 +1,67 @@
+{
+  "uid": "tpg-backup-skipped",
+  "title": "Postgres backup skipped (previous still running)",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "relativeTimeRange": {
+        "from": 900,
+        "to": 0
+      },
+      "datasourceUid": "${DATASOURCE_UID}",
+      "model": {
+        "refId": "A",
+        "expr": "sum by (cluster, instance_name) (increase(argo_workflows_tpg_backup_result_total{result=\"SKIPPED_IN_PROGRESS\"}[1h]))",
+        "instant": true,
+        "range": false,
+        "intervalMs": 60000,
+        "maxDataPoints": 43200
+      }
+    },
+    {
+      "refId": "B",
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "B",
+        "type": "reduce",
+        "expression": "A",
+        "reducer": "last",
+        "settings": {
+          "mode": "dropNN"
+        }
+      }
+    },
+    {
+      "refId": "C",
+      "datasourceUid": "__expr__",
+      "model": {
+        "refId": "C",
+        "type": "threshold",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "gt",
+              "params": [
+                0
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "noDataState": "OK",
+  "execErrState": "Error",
+  "for": "0m",
+  "labels": {
+    "severity": "warning"
+  },
+  "annotations": {
+    "summary": "The backup workflow skipped {{ $labels.cluster }}/{{ $labels.instance_name }} because the previous backup was still running"
+  },
+  "folderUID": "tpg-postgres",
+  "ruleGroup": "tpg-postgres",
+  "orgID": 1
+}

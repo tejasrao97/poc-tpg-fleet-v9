@@ -1,0 +1,345 @@
+# Day 0: validate the inputs, write them to clusters/fleet.yaml (pushMode direct or pr),
+# pre-check every selected cluster, then install the Helm add-ons and deploy the Tanzu
+# Postgres operator and the Postgres instances, canary first and then in batches of maxParallel
+# (rolloutMode: canary, batches or all).
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-day0
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Day 0: write the inputs to clusters/fleet.yaml, pre-check every selected cluster, then
+      install cert-manager and the Vault Secrets Operator and deploy the Tanzu Postgres operator and Postgres instances,
+      canary first and then in batches of maxParallel (rolloutMode=batches skips the canary,
+      rolloutMode=all deploys every selected cluster at once).
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  parallelism: 20
+  arguments:
+    parameters:
+    # ---- targets: clusters and instances, or clusterMap (one of the two)
+    - name: clusters
+      description: "List: comma-separated registered clusters, or all (without clusterMap)"
+      value: ""
+    - name: instances
+      description: "List: Postgres instances to deploy on every selected cluster, namespace pg-<instance> (without clusterMap)"
+      value: ""
+    - name: clusterMap
+      description: "Map (YAML or JSON): cluster -> {operatorVersion, maxReadReplicas, instances: {instance -> {postgresVersion, highAvailability, readReplicas, storageSize, walStorageSize, storageClass, cpu, memory, backupSchedule, enableSSL}}}; the inputs below are the defaults"
+      value: ""
+    # ---- mandatory without clusterMap (with it: the map key or the input)
+    - name: highAvailability
+      description: "Boolean. true: primary and standby (plus readReplicas); false: single node"
+      value: ""
+      enum: ["", "true", "false"]
+    - name: operatorVersion
+      description: "Tanzu Postgres operator chart version, for example v4.5.0"
+      value: ""
+    - name: postgresVersion
+      description: "PostgresVersion name, for example postgres-17.6 (17.6 is accepted)"
+      value: ""
+    - name: pushMode
+      description: "direct: push to the fleet branch; pr: open a pull request and continue after it is merged"
+      value: ""
+      enum: ["", "direct", "pr"]
+    # ---- optional
+    - name: readReplicas
+      description: "Read replicas per instance when highAvailability=true (0 to maxReadReplicas)"
+      value: "1"
+    - name: storageSize
+      description: "Data volume size, for example 50Gi (empty: clusters/_template/instance.yaml)"
+      value: ""
+    - name: walStorageSize
+      description: "WAL volume size (empty: template default)"
+      value: ""
+    - name: storageClass
+      description: "StorageClass for data and WAL volumes (empty: template default tpg-data-retain)"
+      value: ""
+    - name: cpu
+      description: "CPU request and limit per Postgres pod, for example 2 (empty: template default)"
+      value: ""
+    - name: memory
+      description: "Memory request and limit per Postgres pod, for example 4Gi (empty: template default)"
+      value: ""
+    - name: backupSchedule
+      description: "fleet: include in the tpg-backup-full and tpg-backup-incr CronWorkflows; none: exclude"
+      value: "fleet"
+      enum: ["fleet", "none"]
+    - name: installAddons
+      description: "Install cert-manager, the Vault Secrets Operator (and the standalone monitoring agent) as Helm releases, after the add-on pre-check"
+      value: "true"
+      enum: ["true", "false"]
+    - name: existingAddons
+      description: "installAddons: add-on releases that already exist with a different chart version or values: skip or upgrade"
+      value: "skip"
+      enum: ["skip", "upgrade"]
+    - name: monitoringOption
+      description: "Override tpg-settings monitoringOption for installAddons: none, azure or standalone"
+      value: ""
+      enum: ["", "none", "azure", "standalone"]
+    - name: maxParallel
+      value: "2"
+    - name: rolloutMode
+      description: "canary: one wave-0 cluster first, then batches of maxParallel; batches: no canary, batches of maxParallel; all: every selected cluster at once"
+      value: canary
+      enum: ["canary", "batches", "all"]
+    - name: backupEnableSSL
+      description: "PostgresBackupLocation enableSSL for the new instances: false (plain HTTP to Azure Blob; needs an account that allows HTTP) or true"
+      value: "false"
+      enum: ["false", "true"]
+    - name: dryRun
+      description: "true: validate, show the fleet.yaml change and pre-check; push and deploy nothing"
+      value: "false"
+      enum: ["false", "true"]
+    - name: syncTimeoutSeconds
+      value: "1800"
+    - name: prTimeoutSeconds
+      description: "pushMode=pr: how long to wait for the pull request merge"
+      value: "3600"
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: fleet
+        template: fleet
+        arguments:
+          parameters:
+            - name: clusters
+              value: "{{steps.validate.outputs.parameters.clusters}}"
+    - - name: discover
+        templateRef:
+          name: tpg-lib
+          template: discover
+        arguments:
+          parameters:
+            - name: clusters
+              value: "{{steps.validate.outputs.parameters.selection}}"
+            - name: fleet
+              value: "{{steps.fleet.outputs.parameters.fleet}}"
+            - name: filter
+              value: "off"
+    - - name: precheck
+        template: precheck
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item.name}}"
+        withParam: "{{steps.discover.outputs.parameters.inventory}}"
+    - - name: plan
+        templateRef:
+          name: tpg-lib
+          template: plan-batches
+        arguments:
+          parameters:
+            - name: requirePrecheck
+              value: "true"
+            - name: maxParallel
+              value: "{{workflow.parameters.maxParallel}}"
+            - name: rolloutMode
+              value: "{{workflow.parameters.rolloutMode}}"
+    - - name: deploy
+        template: run-batches
+        when: "{{workflow.parameters.dryRun}} == false && {{steps.plan.outputs.parameters.hasBatches}} == true"
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{steps.plan.outputs.parameters.batches}}"
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    outputs:
+      parameters:
+        - name: clusters
+          valueFrom:
+            path: /tmp/clusters.json
+            # A default keeps a failing validate step reporting its own error
+            # instead of Argo replacing it with "output parameter not found".
+            default: "[]"
+        - name: selection
+          valueFrom:
+            path: /tmp/selection
+            default: ""
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, day0]
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_INSTANCES, value: "{{workflow.parameters.instances}}"}
+        - {name: P_HA, value: "{{workflow.parameters.highAvailability}}"}
+        - {name: P_OPERATOR_VERSION, value: "{{workflow.parameters.operatorVersion}}"}
+        - {name: P_POSTGRES_VERSION, value: "{{workflow.parameters.postgresVersion}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_READ_REPLICAS, value: "{{workflow.parameters.readReplicas}}"}
+        - {name: P_STORAGE_SIZE, value: "{{workflow.parameters.storageSize}}"}
+        - {name: P_WAL_STORAGE_SIZE, value: "{{workflow.parameters.walStorageSize}}"}
+        - {name: P_STORAGE_CLASS, value: "{{workflow.parameters.storageClass}}"}
+        - {name: P_CPU, value: "{{workflow.parameters.cpu}}"}
+        - {name: P_MEMORY, value: "{{workflow.parameters.memory}}"}
+        - {name: P_BACKUP_SCHEDULE, value: "{{workflow.parameters.backupSchedule}}"}
+        - {name: P_INSTALL_ADDONS, value: "{{workflow.parameters.installAddons}}"}
+        - {name: P_EXISTING, value: "{{workflow.parameters.existingAddons}}"}
+        - {name: P_MONITORING_OPTION, value: "{{workflow.parameters.monitoringOption}}"}
+        - {name: P_MAX_PARALLEL, value: "{{workflow.parameters.maxParallel}}"}
+        - {name: P_ROLLOUT_MODE, value: "{{workflow.parameters.rolloutMode}}"}
+        - {name: P_BACKUP_ENABLE_SSL, value: "{{workflow.parameters.backupEnableSSL}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.syncTimeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: fleet
+    inputs:
+      parameters:
+        - name: clusters
+    outputs:
+      parameters:
+        - name: fleet
+          valueFrom:
+            path: /tmp/fleet.json
+            default: "{}"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/fleet-day0.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.clusters}}"
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_INSTANCES, value: "{{workflow.parameters.instances}}"}
+        - {name: P_HA, value: "{{workflow.parameters.highAvailability}}"}
+        - {name: P_OPERATOR_VERSION, value: "{{workflow.parameters.operatorVersion}}"}
+        - {name: P_POSTGRES_VERSION, value: "{{workflow.parameters.postgresVersion}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_READ_REPLICAS, value: "{{workflow.parameters.readReplicas}}"}
+        - {name: P_STORAGE_SIZE, value: "{{workflow.parameters.storageSize}}"}
+        - {name: P_WAL_STORAGE_SIZE, value: "{{workflow.parameters.walStorageSize}}"}
+        - {name: P_STORAGE_CLASS, value: "{{workflow.parameters.storageClass}}"}
+        - {name: P_CPU, value: "{{workflow.parameters.cpu}}"}
+        - {name: P_MEMORY, value: "{{workflow.parameters.memory}}"}
+        - {name: P_BACKUP_SCHEDULE, value: "{{workflow.parameters.backupSchedule}}"}
+        - {name: P_INSTALL_ADDONS, value: "{{workflow.parameters.installAddons}}"}
+        - {name: P_MONITORING_OPTION, value: "{{workflow.parameters.monitoringOption}}"}
+        - {name: P_MAX_PARALLEL, value: "{{workflow.parameters.maxParallel}}"}
+        - {name: P_ROLLOUT_MODE, value: "{{workflow.parameters.rolloutMode}}"}
+        - {name: P_BACKUP_ENABLE_SSL, value: "{{workflow.parameters.backupEnableSSL}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.syncTimeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: run-batches
+    inputs:
+      parameters:
+        - name: batches
+    steps:
+    - - name: split
+        templateRef:
+          name: tpg-lib
+          template: split-first
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{inputs.parameters.batches}}"
+    - - name: batch
+        template: deploy-cluster
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item}}"
+        withParam: "{{steps.split.outputs.parameters.first}}"
+    - - name: next
+        template: run-batches
+        when: "{{steps.split.outputs.parameters.hasRest}} == true"
+        arguments:
+          parameters:
+            - name: batches
+              value: "{{steps.split.outputs.parameters.rest}}"
+  - name: precheck
+    inputs:
+      parameters:
+        - name: cluster
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/day0-precheck.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: deploy-cluster
+    inputs:
+      parameters:
+        - name: cluster
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_day0_result
+          help: "Day 0 result per cluster"
+          labels:
+            - key: cluster
+              value: "{{inputs.parameters.cluster}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/day0-deploy.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+        - "{{workflow.parameters.syncTimeoutSeconds}}"
+        - "{{workflow.parameters.installAddons}}"
+      env:
+        - {name: MONITORING_OPTION, value: "{{workflow.parameters.monitoringOption}}"}
+        - {name: EXISTING_ADDONS, value: "{{workflow.parameters.existingAddons}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              value: "cluster-or-precheck:{{workflow.parameters.dryRun}}"

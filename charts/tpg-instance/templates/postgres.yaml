@@ -1,0 +1,44 @@
+{{- /*
+The Postgres object: rendered from the values (with the values patch files
+applied, tpg.ctx), then every postgres patch file of the instance
+(patches.postgres, tpg-patch postgresPatchFilePath) is merged into spec in list
+order. A postgres patch file is a partial manifest: kind Postgres and a spec
+fragment; any field of the Postgres CRD can be set. Fields that belong to other
+workflows (postgresVersion, highAvailability) or cannot change on a running
+instance are refused by tpg-patch before the file is referenced.
+*/ -}}
+{{- define "tpg.postgres" -}}
+apiVersion: sql.tanzu.vmware.com/v1
+kind: Postgres
+metadata:
+  name: {{ .Values.instance.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  postgresVersion:
+    name: {{ .Values.instance.postgresVersion }}
+  storageClassName: {{ .Values.instance.storageClassName }}
+  storageSize: {{ .Values.instance.storageSize }}
+  walStorageSize: {{ .Values.instance.walStorageSize }}
+  serviceType: {{ .Values.instance.serviceType }}
+  persistentVolumeClaimPolicy: retain
+  imagePullSecret:
+    name: regsecret
+  highAvailability:
+    enabled: {{ .Values.instance.highAvailability.enabled }}
+    readReplicas: {{ .Values.instance.highAvailability.readReplicas }}
+  backupLocation:
+    name: {{ .Values.instance.name }}-backup-location
+  resources:
+    {{- toYaml .Values.instance.resources | nindent 4 }}
+{{- end -}}
+{{- $ctx := include "tpg.ctx" . | fromYaml -}}
+{{- $pg := include "tpg.postgres" $ctx | fromYaml -}}
+{{- $patches := default dict $ctx.Values.patches -}}
+{{- range $f := (default list $patches.postgres) -}}
+{{-   $p := include "tpg.patchFile" (dict "root" $ "file" $f "what" "postgres") | fromYaml -}}
+{{-   if ne (toString (default "" $p.kind)) "Postgres" }}{{ fail (printf "postgres patch file %s must have kind: Postgres (got %v)" $f $p.kind) }}{{ end -}}
+{{-   $_ := include "tpg.deepMerge" (dict "dst" $pg.spec "src" (default dict $p.spec)) -}}
+{{- end }}
+{{ toYaml $pg }}

@@ -1,0 +1,47 @@
+# Monitoring option A (Azure Monitor managed Prometheus) on every target cluster.
+# Monitoring holds no data, so automated sync is enabled.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tpg-monitoring-azure
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            tpg.fleet/managed: "true"
+  template:
+    metadata:
+      name: "tpg-{{.name}}-monitoring"
+      labels:
+        tpg.fleet/cluster: "{{.name}}"
+        tpg.fleet/component: monitoring
+    spec:
+      project: tpg
+      sources:
+        - repoURL: https://prometheus-community.github.io/helm-charts
+          chart: kube-state-metrics
+          targetRevision: 8.5.0
+          helm:
+            releaseName: tpg-ksm
+            valueFiles:
+              - $values/monitoring/ksm/values.yaml
+        - repoURL: https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+          targetRevision: main
+          ref: values
+        - repoURL: https://github.com/tejasrao97/poc-tpg-fleet-v9.git
+          targetRevision: main
+          path: monitoring/azure/targets
+      destination:
+        server: "{{.server}}"
+        namespace: monitoring
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: false
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true

@@ -1,0 +1,204 @@
+# Day 2: guarded delete of Postgres instances. Targets: clusterMap (purgePvcs,
+# purgeNamespace and finalBackup per instance) or the instances list on every cluster
+# of the clusters list. Per instance: a final backup, removal from clusters/fleet.yaml,
+# removal of the Application without cascading, deletion of the Postgres objects;
+# volumes, namespace and the backup repository are kept unless purge options are set.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-delete-instance
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Day 2: guarded delete of Postgres instances on one or more clusters (clusterMap, or clusters
+      and instances lists). Final backup, fleet.yaml removal, non-cascading Application removal,
+      CR delete; PVCs and namespace kept unless purged. The backup repository is never deleted.
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  arguments:
+    parameters:
+    # ---- targets: clusters and instances, or clusterMap (one of the two)
+    - name: clusters
+      description: "List: comma-separated registered clusters (without clusterMap)"
+      value: ""
+    - name: instances
+      description: "List: instances to delete on every listed cluster; each must be declared there (without clusterMap)"
+      value: ""
+    - name: clusterMap
+      description: "Map (YAML or JSON): cluster -> {instances: {instance -> {purgePvcs, purgeNamespace, finalBackup}}}; the inputs below are the defaults"
+      value: ""
+    # ---- mandatory
+    - name: confirm
+      description: "List: repeat the instances value (without clusterMap) or the cluster names of clusterMap"
+      value: ""
+    # ---- optional (defaults of every instance; clusterMap keys override them)
+    - name: finalBackup
+      value: "true"
+      enum: ["true", "false", "required"]
+    - name: purgePvcs
+      description: "Delete PVCs and their Azure disks (irreversible)"
+      value: "false"
+      enum: ["false", "true"]
+    - name: purgeNamespace
+      description: "Delete the pg-<instance> namespace (needs purgePvcs=true)"
+      value: "false"
+      enum: ["false", "true"]
+    - name: pushMode
+      description: "direct: push to the fleet branch; pr: open a pull request and continue after it is merged"
+      value: "direct"
+      enum: ["direct", "pr"]
+    - name: timeoutSeconds
+      value: "1800"
+    - name: prTimeoutSeconds
+      value: "3600"
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: discover
+        templateRef:
+          name: tpg-lib
+          template: discover
+        arguments:
+          parameters:
+            - name: clusters
+              value: "{{steps.validate.outputs.parameters.selection}}"
+            - name: filter
+              value: pairs
+            - name: instances
+              value: "{{workflow.parameters.instances}}"
+            - name: clusterMap
+              value: "{{workflow.parameters.clusterMap}}"
+    - - name: delete-all
+        template: delete-all
+        arguments:
+          parameters:
+            - name: items
+              value: "{{steps.discover.outputs.parameters.instanceItems}}"
+  # One instance at a time: every delete is its own fleet.yaml commit (or pull request)
+  - name: delete-all
+    parallelism: 1
+    inputs:
+      parameters:
+        - name: items
+    steps:
+    - - name: delete
+        template: delete
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item.cluster}}"
+            - name: instance
+              value: "{{item.instance}}"
+        withParam: "{{inputs.parameters.items}}"
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    outputs:
+      parameters:
+        - name: selection
+          valueFrom:
+            path: /tmp/selection
+            default: ""
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, delete-instance]
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_INSTANCES, value: "{{workflow.parameters.instances}}"}
+        - {name: P_CONFIRM, value: "{{workflow.parameters.confirm}}"}
+        - {name: P_FINAL_BACKUP, value: "{{workflow.parameters.finalBackup}}"}
+        - {name: P_PURGE_PVCS, value: "{{workflow.parameters.purgePvcs}}"}
+        - {name: P_PURGE_NS, value: "{{workflow.parameters.purgeNamespace}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.timeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: delete
+    inputs:
+      parameters:
+        - name: cluster
+        - name: instance
+    synchronization:
+      mutexes:
+        - name: "tpg-instance-{{inputs.parameters.cluster}}-{{inputs.parameters.instance}}"
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_delete_result
+          help: "Instance delete result"
+          labels:
+            - key: cluster
+              value: "{{inputs.parameters.cluster}}"
+            - key: instance_name
+              value: "{{inputs.parameters.instance}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/delete-instance.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+        - "{{inputs.parameters.instance}}"
+        # confirm was checked by the validate step (instances value or clusterMap clusters)
+        - "{{inputs.parameters.instance}}"
+        - "{{workflow.parameters.finalBackup}}"
+        - "{{workflow.parameters.purgePvcs}}"
+        - "{{workflow.parameters.purgeNamespace}}"
+        - "{{workflow.parameters.timeoutSeconds}}"
+      env:
+        - {name: PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: PR_TIMEOUT_SECONDS, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+        # finalBackup, purgePvcs and purgeNamespace per instance from clusterMap
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: DELETE_FROM_MAP, value: "true"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              value: instance

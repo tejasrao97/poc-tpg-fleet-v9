@@ -1,0 +1,10 @@
+# Example values patch file (tpg-patch valuesPatchFilePath).
+# A fragment of the chart values (charts/tpg-instance/values.yaml keys), merged
+# over the instance's values before the chart renders.
+# tpg-patch refuses instance.name, instance.postgresVersion,
+# instance.highAvailability, instance.storageClassName, a smaller
+# instance.storageSize or instance.walStorageSize, and backup.additionalParameters,
+# backup.enableSSL and backup.forcePathStyle (the tpg-instances ApplicationSet
+# ignores those fields on a running instance, so a sync would never apply them).
+backup:
+  fullRetention: 6

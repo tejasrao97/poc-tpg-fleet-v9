@@ -1,0 +1,24 @@
+# Prometheus Operator (standalone option): scrape the postgres_exporter sidecar
+# (port "metrics", 9187, TLS) that the operator adds to every Postgres data pod.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: postgres-instances
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchLabels:
+      type: data
+      app: postgres
+  podTargetLabels:
+    - postgres-instance
+  podMetricsEndpoints:
+    - port: "metrics"
+      # 10s as in the Tanzu for Postgres 4.5 monitoring guide; the timeout must stay below the interval.
+      interval: 10s
+      scrapeTimeout: 8s
+      scheme: https
+      tlsConfig:
+        insecureSkipVerify: true

@@ -1,0 +1,188 @@
+# Day 2: delete Tanzu Postgres applications from target clusters: Postgres instances
+# (tpg-instances) and the operator with its CRDs (tpg-operator), per cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-delete-apps
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Day 2: delete Postgres instances and/or the Tanzu Postgres operator and its
+      sql.tanzu.vmware.com CRDs from the selected clusters. Removes the entries from
+      clusters/fleet.yaml. dryRun=true (default) only records the plan.
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  parallelism: 5
+  arguments:
+    parameters:
+    # ---- targets: clusters and apps, or clusterMap (one of the two)
+    - name: clusters
+      description: "List: comma-separated registered clusters to clean up (without clusterMap)"
+      value: ""
+    - name: apps
+      description: >-
+        Map (JSON) of cluster to applications (without clusterMap). Applications: tpg-instances (all
+        instances), tpg-instances:<instance>[,<instance>], tpg-operator (operator and CRDs).
+        Example: {"aks-tpg-poc-01":["tpg-instances","tpg-operator"],"aks-tpg-poc-02":["tpg-instances:orders-db"]}
+      value: ""
+    - name: clusterMap
+      description: >-
+        Map (YAML or JSON): cluster -> {deleteOperator, force, instances: {instance -> {purgePvcs,
+        purgeNamespace, finalBackup}}}; the inputs below are the defaults
+      value: ""
+    # ---- mandatory (no default unless shown; the validate step lists the valid choices)
+    - name: confirm
+      description: "List: repeat the clusters value, or the cluster names of clusterMap"
+      value: ""
+    - name: dryRun
+      description: "true: record what would be deleted; false: delete"
+      value: "true"
+      enum: ["true", "false"]
+    - name: purgePvcs
+      description: "true: delete PVCs and their Azure disks (irreversible); false: keep them. With clusterMap: the default of purgePvcs"
+      value: ""
+      enum: ["", "false", "true"]
+    - name: purgeNamespace
+      description: "true: delete the pg-<instance> namespaces (needs purgePvcs=true); false: keep them"
+      value: ""
+      enum: ["", "false", "true"]
+    - name: pushMode
+      description: "direct: push to the fleet branch; pr: open a pull request and continue after it is merged"
+      value: ""
+      enum: ["", "direct", "pr"]
+    # ---- optional
+    - name: force
+      description: "tpg-operator: also delete Postgres instances not listed, and do not wait for running backups or restores"
+      value: "false"
+      enum: ["false", "true"]
+    - name: finalBackup
+      description: "Full backup of each Running instance before deletion: true, false or required"
+      value: "true"
+      enum: ["true", "false", "required"]
+    - name: timeoutSeconds
+      value: "1800"
+    - name: prTimeoutSeconds
+      value: "3600"
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: delete
+        template: delete-cluster
+        arguments:
+          parameters:
+            - name: cluster
+              value: "{{item}}"
+        withParam: "{{steps.validate.outputs.parameters.clusters}}"
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    outputs:
+      parameters:
+        - name: clusters
+          valueFrom:
+            path: /tmp/clusters.json
+            # A default keeps a failing validate step reporting its own error
+            # instead of Argo replacing it with "output parameter not found".
+            default: "[]"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, delete-apps]
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_CLUSTERS, value: "{{workflow.parameters.clusters}}"}
+        - {name: P_APPS, value: "{{workflow.parameters.apps}}"}
+        - {name: P_CONFIRM, value: "{{workflow.parameters.confirm}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_PURGE_PVCS, value: "{{workflow.parameters.purgePvcs}}"}
+        - {name: P_PURGE_NS, value: "{{workflow.parameters.purgeNamespace}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_FORCE, value: "{{workflow.parameters.force}}"}
+        - {name: P_FINAL_BACKUP, value: "{{workflow.parameters.finalBackup}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.timeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: delete-cluster
+    inputs:
+      parameters:
+        - name: cluster
+    synchronization:
+      mutexes:
+        - name: "tpg-cluster-{{inputs.parameters.cluster}}"
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_delete_apps_result
+          help: "Application delete result per cluster (last recorded result)"
+          labels:
+            - key: cluster
+              value: "{{inputs.parameters.cluster}}"
+            - key: dry_run
+              value: "{{workflow.parameters.dryRun}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/delete-apps.sh]
+      args:
+        - "{{workflow.name}}"
+        - "{{inputs.parameters.cluster}}"
+      env:
+        - {name: P_CLUSTER_MAP, value: "{{workflow.parameters.clusterMap}}"}
+        - {name: P_APPS, value: "{{workflow.parameters.apps}}"}
+        - {name: P_DRY_RUN, value: "{{workflow.parameters.dryRun}}"}
+        - {name: P_PURGE_PVCS, value: "{{workflow.parameters.purgePvcs}}"}
+        - {name: P_PURGE_NS, value: "{{workflow.parameters.purgeNamespace}}"}
+        - {name: P_FORCE, value: "{{workflow.parameters.force}}"}
+        - {name: P_FINAL_BACKUP, value: "{{workflow.parameters.finalBackup}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.timeoutSeconds}}"}
+        - {name: PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: PR_TIMEOUT_SECONDS, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              value: steps

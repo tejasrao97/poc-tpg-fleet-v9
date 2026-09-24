@@ -1,0 +1,172 @@
+# Day 1: restore a Postgres instance. Target: a new instance (same cluster: a one-off clone;
+# other cluster: added to clusters/fleet.yaml and managed by Argo CD) or an existing instance
+# (in place, or another instance: destructive, confirm required).
+# Recovery point: time, latest, a named backup, an LSN or a transaction ID.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tpg-restore
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/description: >-
+      Day 1: restore one Postgres instance to a new or an existing instance, on the same or
+      another cluster, with mode time, latest, backup, lsn or xid.
+spec:
+  serviceAccountName: tpg-workflow
+  # Vault Agent (injector on the hub) renders tpg/shared/broadcom-registry,
+  # github-push and backup-storage into /vault/secrets before each step starts
+  # (ConfigMap tpg-vault-agent, workflows/vault-agent/config-init.hcl).
+  # Steps that need no credentials set agent-inject to "false".
+  podMetadata:
+    annotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/agent-pre-populate-only: "true"
+      vault.hashicorp.com/agent-init-first: "true"
+      vault.hashicorp.com/agent-configmap: tpg-vault-agent
+      vault.hashicorp.com/tls-secret: vault-ca
+  entrypoint: main
+  onExit: exit-handler
+  arguments:
+    parameters:
+    # ---- mandatory (no default; the validate step lists the valid choices)
+    - name: sourceCluster
+      description: "Registered cluster that runs the instance to restore from"
+      value: ""
+    - name: instance
+      description: "Source Postgres instance (namespace pg-<instance>)"
+      value: ""
+    - name: mode
+      description: "time (targetTime), latest (newest WAL), backup (a PostgresBackup name), lsn or xid"
+      value: ""
+      enum: ["", "time", "latest", "backup", "lsn", "xid"]
+    # ---- recovery point: the one that belongs to the chosen mode
+    - name: targetTime
+      description: "mode=time: UTC timestamp, for example 2026-09-01T10:30:00Z"
+      value: ""
+    - name: backupName
+      description: "mode=backup: PostgresBackup name in the source namespace (restores inside that namespace only)"
+      value: ""
+    - name: lsn
+      description: "mode=lsn: log sequence number"
+      value: ""
+    - name: xid
+      description: "mode=xid: transaction ID"
+      value: ""
+    # ---- target
+    - name: targetCluster
+      description: "Registered cluster to restore into (empty: sourceCluster)"
+      value: ""
+    - name: targetInstance
+      description: "Instance to restore into (empty: <instance>-restore-<yyyymmddhhmm>; the source instance name: in place)"
+      value: ""
+    - name: confirm
+      description: "Repeat the target instance name when that instance exists (in place or another existing instance): the restore overwrites its data"
+      value: ""
+    - name: pushMode
+      description: "Cross-cluster restore to a new instance: how the clusters/fleet.yaml entry is published (direct or pr)"
+      value: "direct"
+      enum: ["direct", "pr"]
+    - name: bestEffort
+      description: "pitr bestEffort: recover as far as the WAL allows instead of failing"
+      value: "false"
+      enum: ["false", "true"]
+    - name: restoreTimeoutSeconds
+      value: "7200"
+    - name: prTimeoutSeconds
+      value: "3600"
+    - name: toolsImage
+      value: alpine/k8s:1.35.8
+  volumes:
+    - name: scripts
+      configMap:
+        name: tpg-scripts
+        defaultMode: 0755
+  templates:
+  - name: main
+    steps:
+    - - name: validate
+        template: validate
+    - - name: init
+        templateRef:
+          name: tpg-lib
+          template: init-run
+    - - name: restore
+        template: restore
+  - name: validate
+    metadata:
+      annotations:
+        vault.hashicorp.com/agent-inject: "false"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/validate-params.sh, restore]
+      env:
+        - {name: P_SOURCE_CLUSTER, value: "{{workflow.parameters.sourceCluster}}"}
+        - {name: P_INSTANCE, value: "{{workflow.parameters.instance}}"}
+        - {name: P_MODE, value: "{{workflow.parameters.mode}}"}
+        - {name: P_TARGET_TIME, value: "{{workflow.parameters.targetTime}}"}
+        - {name: P_BACKUP_NAME, value: "{{workflow.parameters.backupName}}"}
+        - {name: P_LSN, value: "{{workflow.parameters.lsn}}"}
+        - {name: P_XID, value: "{{workflow.parameters.xid}}"}
+        - {name: P_TARGET_CLUSTER, value: "{{workflow.parameters.targetCluster}}"}
+        - {name: P_TARGET_INSTANCE, value: "{{workflow.parameters.targetInstance}}"}
+        - {name: P_CONFIRM, value: "{{workflow.parameters.confirm}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_BEST_EFFORT, value: "{{workflow.parameters.bestEffort}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.restoreTimeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: restore
+    outputs:
+      parameters:
+        - name: result
+          valueFrom:
+            path: /tmp/result
+            default: UNKNOWN
+    metrics:
+      prometheus:
+        - name: tpg_restore_result
+          help: "Restore result per target cluster"
+          labels:
+            - key: cluster
+              value: "{{workflow.parameters.targetCluster}}"
+            - key: instance_name
+              value: "{{workflow.parameters.instance}}"
+            - key: mode
+              value: "{{workflow.parameters.mode}}"
+            - key: result
+              value: "{{outputs.parameters.result}}"
+          counter:
+            value: "1"
+    container:
+      image: "{{workflow.parameters.toolsImage}}"
+      command: [bash, /scripts/restore.sh]
+      args:
+        - "{{workflow.name}}"
+      env:
+        # One of the four is set (validated); the others are empty
+        - {name: P_SOURCE_CLUSTER, value: "{{workflow.parameters.sourceCluster}}"}
+        - {name: P_INSTANCE, value: "{{workflow.parameters.instance}}"}
+        - {name: P_MODE, value: "{{workflow.parameters.mode}}"}
+        - {name: P_TARGET, value: "{{workflow.parameters.targetTime}}{{workflow.parameters.backupName}}{{workflow.parameters.lsn}}{{workflow.parameters.xid}}"}
+        - {name: P_TARGET_CLUSTER, value: "{{workflow.parameters.targetCluster}}"}
+        - {name: P_TARGET_INSTANCE, value: "{{workflow.parameters.targetInstance}}"}
+        - {name: P_CONFIRM, value: "{{workflow.parameters.confirm}}"}
+        - {name: P_PUSH_MODE, value: "{{workflow.parameters.pushMode}}"}
+        - {name: P_BEST_EFFORT, value: "{{workflow.parameters.bestEffort}}"}
+        - {name: P_TIMEOUT, value: "{{workflow.parameters.restoreTimeoutSeconds}}"}
+        - {name: P_PR_TIMEOUT, value: "{{workflow.parameters.prTimeoutSeconds}}"}
+      volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+  - name: exit-handler
+    steps:
+    - - name: report
+        templateRef:
+          name: tpg-lib
+          template: report
+        arguments:
+          parameters:
+            - name: mode
+              value: steps

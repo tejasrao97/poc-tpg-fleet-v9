@@ -1,0 +1,191 @@
+# Input parameter types of every tpg WorkflowTemplate.
+#
+# Argo Workflows has no parameter types (a parameter is a string, with an
+# optional enum), so the types are declared here once and enforced before a
+# Workflow exists: workflows/params/generate.py turns this file into the
+# ValidatingAdmissionPolicy workflows/admission/workflow-parameters.yaml. The
+# Kubernetes API server of the hub then rejects a Workflow of a tpg template
+# whose inputs do not match - from argo submit, the Argo UI, the API or a
+# CronWorkflow - with a message that names each wrong input and its type, and
+# no Workflow is created.
+#
+# tests/params/run.sh checks that this file, the WorkflowTemplates (names,
+# defaults, enums), the generated policy and the Type columns in
+# docs/workflow-commands.md agree.
+#
+# Mandatory inputs are still checked by the validate step of each workflow,
+# because some are mandatory only without clusterMap; so is the inside of
+# clusterMap (clustermap.py), which CEL cannot parse.
+#
+#   type        a key of "types" below
+#   values      enum only
+#   allowEmpty  true: an empty value passes the type check (optional inputs, and
+#               mandatory ones whose absence the validate step reports)
+types:
+  string: {display: String, pattern: "", describe: "a string"}
+  name: {display: String (name), pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', describe: "a lowercase DNS label"}
+  k8sName: {display: String (name), pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', describe: "a Kubernetes object name"}
+  list: {display: List, pattern: '^\s*[a-z0-9]([-a-z0-9]*[a-z0-9])?(\s*,\s*[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\s*$', describe: "a List (comma-separated names)", excludeAll: true}
+  listOrAll: {display: List, pattern: '^\s*(all|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\s*,\s*[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)\s*$', describe: "a List (comma-separated names, or all)"}
+  components: {display: List, pattern: '^\s*(auto|cert-manager|vso|monitoring)(\s*,\s*(cert-manager|vso|monitoring))*\s*$', describe: "a List of auto, cert-manager, vso, monitoring"}
+  boolean: {display: Boolean, pattern: '^(true|false)$', describe: "a Boolean (true or false)"}
+  integer: {display: Integer, pattern: '^[0-9]+$', describe: "an Integer (0 or more)"}
+  posint: {display: Integer, pattern: '^[1-9][0-9]*$', describe: "an Integer (1 or more)"}
+  quantity: {display: String (quantity), pattern: '^[0-9]+(\.[0-9]+)?(m|Ki|Mi|Gi|Ti|Pi|k|M|G|T|P)?$', describe: "a Kubernetes quantity such as 20Gi or 500m"}
+  enum: {display: Enum, pattern: "", describe: "one of"}
+  operatorVersion: {display: String (version), pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?$', describe: "an operator version such as v4.5.0"}
+  postgresVersion: {display: String (version), pattern: '^(postgres-)?[0-9]+(\.[0-9]+)?$', describe: "a Postgres version such as postgres-17.6"}
+  version: {display: String (version), pattern: '^(v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?|(postgres-)?[0-9]+(\.[0-9]+)?)$', describe: "an operator version (v4.5.1) or a Postgres version (postgres-17.6)"}
+  timestamp: {display: String (UTC time), pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$', describe: "a UTC time such as 2026-09-15T08:30:00Z"}
+  lsn: {display: String (LSN), pattern: '^[0-9A-Fa-f]+/[0-9A-Fa-f]+$', describe: "a log sequence number such as 0/3000060"}
+  map: {display: Map, pattern: '^\s*(\{|[^\s:#][^:]*:)', describe: "a Map (YAML or JSON)"}
+  jsonMap: {display: Map (JSON), pattern: '^\s*\{', describe: "a JSON object"}
+  pathList: {display: List (paths), pattern: '^\s*[A-Za-z0-9_][A-Za-z0-9_./-]*\.ya?ml(\s*,\s*[A-Za-z0-9_][A-Za-z0-9_./-]*\.ya?ml)*\s*$', describe: "a List of .yaml paths in the tpg-fleet repository"}
+
+templates:
+  tpg-day0:
+    clusters: {type: listOrAll, allowEmpty: true}
+    instances: {type: list, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    highAvailability: {type: boolean, allowEmpty: true}
+    operatorVersion: {type: operatorVersion, allowEmpty: true}
+    postgresVersion: {type: postgresVersion, allowEmpty: true}
+    pushMode: {type: enum, values: [direct, pr], allowEmpty: true}
+    readReplicas: {type: integer}
+    storageSize: {type: quantity, allowEmpty: true}
+    walStorageSize: {type: quantity, allowEmpty: true}
+    storageClass: {type: name, allowEmpty: true}
+    cpu: {type: quantity, allowEmpty: true}
+    memory: {type: quantity, allowEmpty: true}
+    backupSchedule: {type: enum, values: [fleet, none]}
+    installAddons: {type: boolean}
+    existingAddons: {type: enum, values: [skip, upgrade]}
+    monitoringOption: {type: enum, values: [none, azure, standalone], allowEmpty: true}
+    maxParallel: {type: posint}
+    rolloutMode: {type: enum, values: [canary, batches, all]}
+    backupEnableSSL: {type: boolean}
+    dryRun: {type: boolean}
+    syncTimeoutSeconds: {type: posint}
+    prTimeoutSeconds: {type: posint}
+    toolsImage: {type: string}
+
+  tpg-upgrade:
+    component: {type: enum, values: [operator, postgres], allowEmpty: true}
+    targetVersion: {type: version, allowEmpty: true}
+    clusters: {type: listOrAll, allowEmpty: true}
+    pushMode: {type: enum, values: [direct, pr], allowEmpty: true}
+    instances: {type: listOrAll, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    preUpgradeBackup: {type: boolean}
+    allowMajor: {type: boolean}
+    operatorPatches: {type: enum, values: [keep, drop]}
+    maxParallel: {type: posint}
+    rolloutMode: {type: enum, values: [canary, batches, all]}
+    dryRun: {type: boolean}
+    timeoutSeconds: {type: posint}
+    prTimeoutSeconds: {type: posint}
+    toolsImage: {type: string}
+
+  tpg-patch:
+    clusters: {type: listOrAll, allowEmpty: true}
+    instances: {type: listOrAll, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    postgresPatchFilePath: {type: pathList, allowEmpty: true}
+    valuesPatchFilePath: {type: pathList, allowEmpty: true}
+    operatorValuesPatchFilePath: {type: pathList, allowEmpty: true}
+    operatorManifestPatchFilePath: {type: pathList, allowEmpty: true}
+    patchMode: {type: enum, values: [append, replace, remove]}
+    pushMode: {type: enum, values: [direct, pr], allowEmpty: true}
+    maxParallel: {type: posint}
+    rolloutMode: {type: enum, values: [canary, batches, all]}
+    dryRun: {type: boolean}
+    timeoutSeconds: {type: posint}
+    prTimeoutSeconds: {type: posint}
+    toolsImage: {type: string}
+
+  tpg-scale-instance:
+    clusters: {type: list, allowEmpty: true}
+    instances: {type: list, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    replicas: {type: integer, allowEmpty: true}
+    pushMode: {type: enum, values: [direct, pr], allowEmpty: true}
+    enableHAIfNeeded: {type: boolean}
+    dryRun: {type: boolean}
+    timeoutSeconds: {type: posint}
+    prTimeoutSeconds: {type: posint}
+    toolsImage: {type: string}
+
+  tpg-backup:
+    backupType: {type: enum, values: [full, incremental, differential]}
+    clusters: {type: listOrAll, allowEmpty: true}
+    instances: {type: listOrAll, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    backupTimeoutSeconds: {type: posint}
+    scheduledOnly: {type: boolean}
+    toolsImage: {type: string}
+
+  tpg-backup-retention:
+    clusters: {type: listOrAll, allowEmpty: true}
+    instances: {type: listOrAll, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    retentionDays: {type: posint, allowEmpty: true}
+    dryRun: {type: boolean}
+    toolsImage: {type: string}
+
+  tpg-delete-instance:
+    clusters: {type: list, allowEmpty: true}
+    instances: {type: list, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    confirm: {type: list, allowEmpty: true}
+    finalBackup: {type: enum, values: ["true", "false", required]}
+    purgePvcs: {type: boolean}
+    purgeNamespace: {type: boolean}
+    pushMode: {type: enum, values: [direct, pr]}
+    timeoutSeconds: {type: posint}
+    prTimeoutSeconds: {type: posint}
+    toolsImage: {type: string}
+
+  tpg-delete-apps:
+    clusters: {type: list, allowEmpty: true}
+    apps: {type: jsonMap, allowEmpty: true}
+    clusterMap: {type: map, allowEmpty: true}
+    confirm: {type: list, allowEmpty: true}
+    dryRun: {type: boolean}
+    purgePvcs: {type: boolean, allowEmpty: true}
+    purgeNamespace: {type: boolean, allowEmpty: true}
+    pushMode: {type: enum, values: [direct, pr], allowEmpty: true}
+    force: {type: boolean}
+    finalBackup: {type: enum, values: ["true", "false", required]}
+    timeoutSeconds: {type: posint}
+    prTimeoutSeconds: {type: posint}
+    toolsImage: {type: string}
+
+  tpg-helm-addons:
+    clusters: {type: listOrAll, allowEmpty: true}
+    components: {type: components}
+    existingAddons: {type: enum, values: [skip, upgrade]}
+    dryRun: {type: boolean}
+    toolsImage: {type: string}
+
+  tpg-restore:
+    sourceCluster: {type: name, allowEmpty: true}
+    instance: {type: name, allowEmpty: true}
+    mode: {type: enum, values: [time, latest, backup, lsn, xid], allowEmpty: true}
+    targetTime: {type: timestamp, allowEmpty: true}
+    backupName: {type: k8sName, allowEmpty: true}
+    lsn: {type: lsn, allowEmpty: true}
+    xid: {type: integer, allowEmpty: true}
+    targetCluster: {type: name, allowEmpty: true}
+    targetInstance: {type: name, allowEmpty: true}
+    confirm: {type: name, allowEmpty: true}
+    pushMode: {type: enum, values: [direct, pr]}
+    bestEffort: {type: boolean}
+    restoreTimeoutSeconds: {type: posint}
+    prTimeoutSeconds: {type: posint}
+    toolsImage: {type: string}
+
+  tpg-rotate-credential:
+    secretType: {type: enum, values: [broadcom-registry, backup-storage, git-push, git-read]}
+    clusters: {type: listOrAll}
+    maxParallel: {type: posint}
+    toolsImage: {type: string}

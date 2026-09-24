@@ -1,0 +1,29 @@
+# OPTIONAL (standalone option): Prometheus alerts (PrometheusRule tpg-rules)
+# to email through Alertmanager SMTP. Add to the hub kps release with
+# KPS_HUB_EXTRA_VALUES=monitoring/prometheus/alertmanager-smtp-values.yaml
+# (tpg-aks-infra scripts/run.sh --only addons) after creating:
+#   kubectl -n monitoring create secret generic am-smtp --from-literal=password=<smtp-password>
+alertmanager:
+  alertmanagerSpec:
+    secrets:
+      - am-smtp
+  config:
+    global:
+      smtp_smarthost: smtp.example.com:587
+      smtp_from: tpg-alertmanager@example.com
+      smtp_auth_username: <smtp-user>
+      smtp_auth_password_file: /etc/alertmanager/secrets/am-smtp/password
+      smtp_require_tls: true
+    route:
+      receiver: tpg-email
+      group_by: ["alertname", "cluster"]
+      routes:
+        - matchers:
+            - alertname = "Watchdog"
+          receiver: "null"
+    receivers:
+      - name: "null"
+      - name: tpg-email
+        email_configs:
+          - to: dba-team@example.com
+            send_resolved: true
