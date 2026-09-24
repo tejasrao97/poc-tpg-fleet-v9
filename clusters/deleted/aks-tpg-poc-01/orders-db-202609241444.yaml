@@ -1,0 +1,17 @@
+instance:
+  postgresVersion: postgres-16.8
+  highAvailability:
+    enabled: true
+    readReplicas: 3
+  resources:
+    data:
+      requests:
+        memory: 8Gi
+      limits:
+        memory: 8Gi
+backup:
+  enableSSL: false
+deleted:
+  workflow: tpg-delete-apps-jmvr5
+  time: "2026-09-24T14:44:18Z"
+  stanzaName: ""
