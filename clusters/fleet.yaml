@@ -29,10 +29,6 @@ clusters:
     operator:
       version: v4.5.0
     instances: {}
-  aks-tpg-poc-02:
-    operator:
-      version: v4.4.0
-    instances: {}
   aks-tpg-poc-03:
     operator:
       version: v4.4.0
