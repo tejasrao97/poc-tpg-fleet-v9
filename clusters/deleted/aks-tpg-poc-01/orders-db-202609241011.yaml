@@ -1,0 +1,11 @@
+instance:
+  postgresVersion: postgres-17.5
+  highAvailability:
+    enabled: true
+    readReplicas: 1
+backup:
+  enableSSL: false
+deleted:
+  workflow: tpg-delete-instance-26xb5
+  time: "2026-09-24T10:11:21Z"
+  stanzaName: pg-orders-db-orders-db-ee9765e3-20a8-4b13-bedc-e4758af9fb37

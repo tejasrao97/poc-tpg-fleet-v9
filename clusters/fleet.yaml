@@ -28,15 +28,7 @@ clusters:
   aks-tpg-poc-01:
     operator:
       version: v4.5.0
-    instances:
-      orders-db:
-        instance:
-          postgresVersion: postgres-17.5
-          highAvailability:
-            enabled: true
-            readReplicas: 1
-        backup:
-          enableSSL: false
+    instances: {}
   aks-tpg-poc-02:
     operator:
       version: v4.4.0
