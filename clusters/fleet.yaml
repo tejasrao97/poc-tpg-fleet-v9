@@ -36,7 +36,7 @@ clusters:
           postgresVersion: postgres-16.8
           highAvailability:
             enabled: true
-            readReplicas: 1
+            readReplicas: 3
         backup:
           enableSSL: false
           scheduled: false
@@ -45,7 +45,7 @@ clusters:
           postgresVersion: postgres-16.9
           highAvailability:
             enabled: true
-            readReplicas: 1
+            readReplicas: 3
           storageSize: 50Gi
         backup:
           enableSSL: false
@@ -58,7 +58,7 @@ clusters:
           postgresVersion: postgres-16.8
           highAvailability:
             enabled: true
-            readReplicas: 3
+            readReplicas: 2
         backup:
           enableSSL: false
       orders-db:
@@ -66,7 +66,7 @@ clusters:
           postgresVersion: postgres-16.8
           highAvailability:
             enabled: true
-            readReplicas: 3
+            readReplicas: 2
           storageSize: 50Gi
         backup:
           enableSSL: false
@@ -79,7 +79,7 @@ clusters:
           postgresVersion: postgres-16.8
           highAvailability:
             enabled: true
-            readReplicas: 1
+            readReplicas: 2
         backup:
           enableSSL: false
           scheduled: false
@@ -88,7 +88,7 @@ clusters:
           postgresVersion: postgres-16.8
           highAvailability:
             enabled: true
-            readReplicas: 3
+            readReplicas: 2
           resources:
             data:
               requests:
